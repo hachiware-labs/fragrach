@@ -346,12 +346,20 @@ export function buildOracleChunks(expected, rawChunks) {
   return chunks;
 }
 
-export function buildActualChunks(buildDirectories) {
+export function buildActualChunks(buildDirectories, options = {}) {
+  const {
+    authorityBoost = true,
+    evidenceFallback = false,
+    includeClaims = true,
+    includeConflicts = true,
+    includeDiagnosticAliases = false,
+  } = options;
   const claimsById = new Map();
   const evidenceById = new Map();
   const conflictsById = new Map();
   const diagnosticsById = new Map();
   const authorityPrecedenceByIntent = new Map();
+  const allEvidence = [];
 
   for (const buildDirectory of buildDirectories) {
     const manifest = JSON.parse(
@@ -371,6 +379,7 @@ export function buildActualChunks(buildDirectories) {
         `${intentId}/${evidence.source_id}/${evidence.evidence_id}`,
         evidence,
       );
+      allEvidence.push({ intentId, evidence });
     }
     for (const claim of readJsonl(path.join(buildDirectory, "claims.jsonl"))) {
       claimsById.set(`${intentId}/${claim.id}`, { ...claim, intent_id: intentId });
@@ -402,6 +411,16 @@ export function buildActualChunks(buildDirectories) {
         section: (evidence.heading_path ?? []).join(" / ") || "本文",
       }));
   const unitsByEvidence = new Map();
+  if (evidenceFallback) {
+    for (const { intentId, evidence } of allEvidence) {
+      const key = `${intentId}/${evidence.source_id}/${evidence.evidence_id}`;
+      unitsByEvidence.set(key, {
+        intentId,
+        evidence,
+        claims: new Map(),
+      });
+    }
+  }
   for (const claim of claimsById.values()) {
     for (const reference of claim.evidence ?? []) {
       const evidenceKey = `${reference.source_id}/${reference.evidence_id}`;
@@ -431,7 +450,7 @@ export function buildActualChunks(buildDirectories) {
       valid_from: evidence.valid_from,
       valid_to: evidence.valid_to,
       score_boost:
-        authorityRank < 0
+        !authorityBoost || authorityRank < 0
           ? 1
           : 1 + (precedence.length - authorityRank) * 0.05,
       evidence: [
@@ -449,23 +468,27 @@ export function buildActualChunks(buildDirectories) {
         authorityRank >= 0
           ? `権威優先順位: ${authorityRank + 1}（小さいほど優先）`
           : "",
-        ...[...claims.values()].flatMap((claim, index) => [
-          `Claim ${index + 1}`,
-          `主語: ${valueText(claim.subject)}`,
-          `述語: ${valueText(claim.predicate)}`,
-          `目的語: ${valueText(claim.object)}`,
-          claim.predicate === "is_alias_of"
-            ? `別名関係: ${[
-                claim.subject,
-                ...(Array.isArray(claim.object) ? claim.object : [claim.object]),
-              ].join(" = ")}`
-            : "",
-          claim.condition ? `条件: ${claim.condition}` : "",
-          claim.status ? `状態: ${claim.status}` : "",
-          claim.valid_from ? `有効開始: ${claim.valid_from}` : "",
-          claim.valid_to ? `有効終了: ${claim.valid_to}` : "",
-          claim.authority ? `権威: ${claim.authority}` : "",
-        ]),
+        ...(includeClaims
+          ? [...claims.values()].flatMap((claim, index) => [
+              `Claim ${index + 1}`,
+              `主語: ${valueText(claim.subject)}`,
+              `述語: ${valueText(claim.predicate)}`,
+              `目的語: ${valueText(claim.object)}`,
+              claim.predicate === "is_alias_of"
+                ? `別名関係: ${[
+                    claim.subject,
+                    ...(Array.isArray(claim.object)
+                      ? claim.object
+                      : [claim.object]),
+                  ].join(" = ")}`
+                : "",
+              claim.condition ? `条件: ${claim.condition}` : "",
+              claim.status ? `状態: ${claim.status}` : "",
+              claim.valid_from ? `有効開始: ${claim.valid_from}` : "",
+              claim.valid_to ? `有効終了: ${claim.valid_to}` : "",
+              claim.authority ? `権威: ${claim.authority}` : "",
+            ])
+          : []),
       ]
         .filter(Boolean)
         .join("\n"),
@@ -473,7 +496,7 @@ export function buildActualChunks(buildDirectories) {
     },
   );
 
-  for (const conflict of conflictsById.values()) {
+  for (const conflict of includeConflicts ? conflictsById.values() : []) {
     const claims = (conflict.claim_ids ?? [])
       .map((id) => claimsById.get(`${conflict.intent_id}/${id}`))
       .filter(Boolean);
@@ -522,10 +545,15 @@ export function buildActualChunks(buildDirectories) {
       intent_id: diagnostic.intent_id,
       valid_from: cited[0]?.valid_from,
       valid_to: cited[0]?.valid_to,
-      evidence: cited.map((item) => ({
-        source: normalizeSource(`sources/${item.source_path}`),
-        section: (item.heading_path ?? []).join(" / ") || "本文",
-      })),
+      evidence: cited.flatMap((item) =>
+        [
+          item.source_path,
+          ...(includeDiagnosticAliases ? item.source_aliases ?? [] : []),
+        ].map((sourcePath) => ({
+          source: normalizeSource(`sources/${sourcePath}`),
+          section: (item.heading_path ?? []).join(" / ") || "本文",
+        })),
+      ),
       text: [
         "種別: Missing Information",
         `診断: ${diagnostic.message}`,
@@ -626,7 +654,7 @@ export class Bm25Index {
   }
 }
 
-function retrieve(index, questions, topK) {
+export function retrieve(index, questions, topK) {
   const byQuestion = new Map();
   const supportsIntentFilter = index.documents.some(
     (document) => document.intent_id,
@@ -664,7 +692,7 @@ export function documentMatchesAsOf(document, asOf) {
   return active(document);
 }
 
-function expandedEvidence(retrieved) {
+export function expandedEvidence(retrieved) {
   const evidence = [];
   const seen = new Set();
   for (const [index, item] of retrieved.entries()) {
@@ -690,7 +718,7 @@ function evidenceMatches(left, right) {
   );
 }
 
-function retrievalRecall(question, retrieved) {
+export function retrievalRecall(question, retrieved) {
   if (question.required_evidence.length === 0) return 1;
   const actual = expandedEvidence(retrieved);
   const matched = question.required_evidence.filter((required) =>
@@ -1158,6 +1186,7 @@ function parseArguments(argv) {
     seed: 42,
     compiledBuilds: [],
     actualOnly: false,
+    actualVariant: "baseline",
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -1178,6 +1207,8 @@ function parseArguments(argv) {
       options.compiledBuilds.push(path.resolve(argv[++index]));
     } else if (argument === "--actual-only") {
       options.actualOnly = true;
+    } else if (argument === "--actual-variant") {
+      options.actualVariant = argv[++index];
     } else if (argument === "--help" || argument === "-h") {
       options.help = true;
     } else {
@@ -1201,7 +1232,37 @@ Options:
   --compiled-build <path>
                      Add an actual Fragrach Knowledge Build (repeatable)
   --actual-only      Skip Raw and Oracle answer generation
+  --actual-variant <name>
+                     Actual adapter: baseline, aliases, evidence-fallback,
+                     fallback-no-authority, or fallback-evidence-only
   --help             Show this help`);
+}
+
+export function actualVariantOptions(name) {
+  const variants = {
+    baseline: {},
+    aliases: {
+      includeDiagnosticAliases: true,
+    },
+    "evidence-fallback": {
+      evidenceFallback: true,
+      includeDiagnosticAliases: true,
+    },
+    "fallback-no-authority": {
+      authorityBoost: false,
+      evidenceFallback: true,
+      includeDiagnosticAliases: true,
+    },
+    "fallback-evidence-only": {
+      evidenceFallback: true,
+      includeClaims: false,
+      includeDiagnosticAliases: true,
+    },
+  };
+  if (!(name in variants)) {
+    throw new Error(`unknown --actual-variant: ${name}`);
+  }
+  return variants[name];
 }
 
 async function main() {
@@ -1225,7 +1286,10 @@ async function main() {
   const oracleChunks = buildOracleChunks(expected, rawChunks);
   const actualChunks =
     options.compiledBuilds.length > 0
-      ? buildActualChunks(options.compiledBuilds)
+      ? buildActualChunks(
+          options.compiledBuilds,
+          actualVariantOptions(options.actualVariant),
+        )
       : [];
   if (options.actualOnly && actualChunks.length === 0) {
     throw new Error("--actual-only requires at least one --compiled-build");
@@ -1281,6 +1345,7 @@ async function main() {
     model: options.model,
     top_k: options.topK,
     seed: options.seed,
+    actual_variant: options.actualVariant,
     generated_at: new Date().toISOString(),
     indexes: {
       raw_chunks: rawChunks.length,

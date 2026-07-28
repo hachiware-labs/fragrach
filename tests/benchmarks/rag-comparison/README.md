@@ -106,3 +106,31 @@ Oracleは実装済みFragrachの精度を表さない。正しく知識をコン
 結果は既定で`target/benchmarks/rag-comparison/`へ保存される。
 
 2026年7月28日に47文書へ拡張して実施したRaw、Oracle、Actualの結果と判定上の注意は、`UPPER_BOUND_FINDINGS_ja.md`に記録している。
+
+## アブレーション
+
+Actualの検索単位を切り替え、権威加点、Conflict、Alias、Claim本文、Evidence fallbackの効果を回答生成なしで比較する。
+
+```powershell
+node tests/benchmarks/rag-comparison/run-ablation.mjs `
+  --compiled-build target/expanded-builds-v1/design-review `
+  --compiled-build target/expanded-builds-v1/incident-response `
+  --compiled-build target/expanded-builds-v1/developer-onboarding `
+  --compiled-build target/path/to/data-export-operation-build `
+  --top-k 5,10,20 `
+  --output target/benchmarks/rag-ablation/retrieval-ablation.json
+```
+
+有望な条件を回答生成まで確認する場合は、`run-upper-bound.mjs`の`--actual-variant`を使う。`evidence-fallback`は全Evidenceを検索可能にし、`aliases`はMissing Informationの根拠へ完全重複文書の別名を伝播する。
+
+```powershell
+node tests/benchmarks/rag-comparison/run-upper-bound.mjs `
+  --actual-only `
+  --actual-variant evidence-fallback `
+  --compiled-build target/expanded-builds-v1/design-review `
+  --compiled-build target/expanded-builds-v1/incident-response `
+  --compiled-build target/expanded-builds-v1/developer-onboarding `
+  --compiled-build target/path/to/data-export-operation-build
+```
+
+実測と判断は`ABLATION_FINDINGS_ja.md`に記録している。

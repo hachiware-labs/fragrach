@@ -6,11 +6,24 @@ import path from "node:path";
 
 import {
   Bm25Index,
+  actualVariantOptions,
   buildActualChunks,
   buildOracleChunks,
   documentMatchesAsOf,
   tokenize,
 } from "./run-upper-bound.mjs";
+
+test("Actualアブレーション名を検索単位オプションへ変換する", () => {
+  assert.deepEqual(actualVariantOptions("baseline"), {});
+  assert.deepEqual(actualVariantOptions("evidence-fallback"), {
+    evidenceFallback: true,
+    includeDiagnosticAliases: true,
+  });
+  assert.throws(
+    () => actualVariantOptions("unknown"),
+    /unknown --actual-variant/,
+  );
+});
 
 test("日本語文字n-gramで分かち書きのない質問を検索できる", () => {
   const tokens = tokenize("設計レビューが必要ですか");
@@ -45,6 +58,14 @@ test("Actual Buildを根拠単位に束ねてConflictとともに検索する", 
       text: "承認が必要",
       authority: "corporate_standard",
     },
+    {
+      source_id: "src",
+      evidence_id: "ev-unclaimed",
+      source_path: "supplement.md",
+      heading_path: ["補足"],
+      text: "申請フォームを使う",
+      authority: "guidance",
+    },
   ]);
   writeJsonl("claims.jsonl", [
     {
@@ -66,10 +87,17 @@ test("Actual Buildを根拠単位に束ねてConflictとともに検索する", 
   ]);
   writeJsonl("diagnostics.jsonl", [
     { id: "diagnostic", message: "判断できません", reason: "根拠不足" },
+    {
+      id: "missing-owner",
+      code: "FRG-CST-MISSING-OWNER",
+      message: "担当者がありません",
+      reason: "原文に記載がありません",
+      evidence_ids: ["ev"],
+    },
   ]);
 
   const actual = buildActualChunks([directory]);
-  assert.equal(actual.length, 2);
+  assert.equal(actual.length, 3);
   assert(
     actual.some(
       (chunk) =>
@@ -83,6 +111,46 @@ test("Actual Buildを根拠単位に束ねてConflictとともに検索する", 
   assert.equal(actual[0].intent_id, "design-review");
   assert(actual[0].text.includes("権威優先順位: 1"));
   assert.equal(actual[0].score_boost, 1.1);
+
+  const fallback = buildActualChunks([directory], {
+    evidenceFallback: true,
+  });
+  assert.equal(fallback.length, 4);
+  assert(
+    fallback.some(
+      (chunk) =>
+        chunk.id.includes("ev-unclaimed") &&
+        chunk.text.includes("根拠本文: 申請フォームを使う"),
+    ),
+  );
+
+  const withoutAuthorityBoost = buildActualChunks([directory], {
+    authorityBoost: false,
+  });
+  assert.equal(withoutAuthorityBoost[0].score_boost, 1);
+
+  const withoutConflicts = buildActualChunks([directory], {
+    includeConflicts: false,
+  });
+  assert.equal(withoutConflicts.length, 2);
+
+  const evidenceOnly = buildActualChunks([directory], {
+    evidenceFallback: true,
+    includeClaims: false,
+  });
+  assert(!evidenceOnly[0].text.includes("Claim 1"));
+
+  const withDiagnosticAliases = buildActualChunks([directory], {
+    includeDiagnosticAliases: true,
+  });
+  const missingInformation = withDiagnosticAliases.find((chunk) =>
+    chunk.id.includes("missing-owner"),
+  );
+  assert.equal(missingInformation.evidence.length, 2);
+  assert.equal(
+    missingInformation.evidence[1].source,
+    "sources/copies/policy-copy.md",
+  );
 });
 
 test("BM25は関連する規則を上位へ返す", () => {
