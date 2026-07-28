@@ -105,4 +105,4 @@ Oracleは実装済みFragrachの精度を表さない。正しく知識をコン
 
 結果は既定で`target/benchmarks/rag-comparison/`へ保存される。
 
-2026年7月27日に実施した一回目の結果と判定上の注意は、`UPPER_BOUND_FINDINGS_ja.md`に記録している。
+2026年7月28日に47文書へ拡張して実施したRaw、Oracle、Actualの結果と判定上の注意は、`UPPER_BOUND_FINDINGS_ja.md`に記録している。

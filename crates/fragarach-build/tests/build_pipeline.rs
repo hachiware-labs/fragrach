@@ -176,6 +176,58 @@ fn atomically_publishes_complete_build_and_exports_it() {
 }
 
 #[test]
+fn recompile_rejects_claims_that_fail_current_ir_validation() {
+    let (root, intent) = fixture();
+    let original = root.path().join("original");
+    compile_workspace(
+        &CompileOptions {
+            workspace: root.path().to_path_buf(),
+            intent_file: intent,
+            output: original.clone(),
+            batch_size: 8,
+            conflict_context: ConflictContext::default(),
+            policy: CompilationPolicy::default(),
+        },
+        &FixtureExtractor {
+            hallucinate_reference: false,
+        },
+    )
+    .unwrap();
+
+    let claims_path = original.join("claims.jsonl");
+    let mut claim: serde_json::Value =
+        serde_json::from_str(fs::read_to_string(&claims_path).unwrap().trim()).unwrap();
+    claim["object"] = json!("");
+    fs::write(
+        &claims_path,
+        format!("{}\n", serde_json::to_string(&claim).unwrap()),
+    )
+    .unwrap();
+
+    let output = root.path().join("revalidated");
+    let result = recompile_build(&RecompileOptions {
+        workspace: root.path().to_path_buf(),
+        input: original,
+        output: output.clone(),
+        conflict_context: ConflictContext::default(),
+        policy: CompilationPolicy::default(),
+    })
+    .unwrap();
+
+    assert_eq!(
+        result.manifest.status,
+        KnowledgeBuildStatus::CompletedWithWarnings
+    );
+    assert_eq!(result.manifest.metrics.claims, 0);
+    assert_eq!(result.manifest.metrics.rejected_claims, 1);
+    assert!(
+        fs::read_to_string(output.join("diagnostics.jsonl"))
+            .unwrap()
+            .contains("FRG-CST-INVALID-CLAIM")
+    );
+}
+
+#[test]
 fn failed_build_is_preserved_outside_the_publication_path() {
     let (root, intent) = fixture();
     let requested_output = root.path().join("must-not-publish");

@@ -41,5 +41,9 @@ authority_hints:
     lifecycle: superseded
   - pattern: "sources/**/notes/*"
     authority: record
+  - pattern: "sources/**/records/*"
+    authority: record
   - pattern: "sources/**/faq/*"
+    authority: guidance
+  - pattern: "sources/**/procedures/*"
     authority: guidance

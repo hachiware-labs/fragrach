@@ -175,7 +175,7 @@ impl Claim {
         }
         if self.subject.trim().is_empty()
             || self.predicate.trim().is_empty()
-            || self.object.is_null()
+            || value_is_empty(&self.object)
         {
             return Err("claim subject, predicate, and object are required");
         }
@@ -188,6 +188,18 @@ impl Claim {
             return Err("claim evidence references must contain source and evidence ids");
         }
         Ok(())
+    }
+}
+
+fn value_is_empty(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null => true,
+        serde_json::Value::String(value) => value.trim().is_empty(),
+        serde_json::Value::Array(values) => values.is_empty() || values.iter().all(value_is_empty),
+        serde_json::Value::Object(values) => {
+            values.is_empty() || values.values().all(value_is_empty)
+        }
+        serde_json::Value::Bool(_) | serde_json::Value::Number(_) => false,
     }
 }
 
@@ -415,6 +427,40 @@ mod tests {
             .validate()
             .is_ok()
         );
+    }
+
+    #[test]
+    fn claims_reject_semantically_empty_objects() {
+        for object in [
+            serde_json::json!(""),
+            serde_json::json!("   "),
+            serde_json::json!([]),
+            serde_json::json!({}),
+            serde_json::json!(["", " "]),
+            serde_json::json!({"value": "", "alternatives": []}),
+        ] {
+            let claim = Claim {
+                id: "claim-empty".to_owned(),
+                subject: "subject".to_owned(),
+                predicate: "predicate".to_owned(),
+                object,
+                condition: None,
+                valid_from: None,
+                valid_to: None,
+                authority: None,
+                status: None,
+                confidence: 1.0,
+                evidence: vec![EvidenceReference {
+                    source_id: "source".to_owned(),
+                    evidence_id: "evidence".to_owned(),
+                }],
+            };
+
+            assert_eq!(
+                claim.validate(),
+                Err("claim subject, predicate, and object are required")
+            );
+        }
     }
 
     #[test]

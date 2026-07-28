@@ -496,6 +496,29 @@ pub fn recompile_build(options: &RecompileOptions) -> Result<CompileResult> {
     ensure_schema(&old_manifest.schema_version, "Knowledge Build")?;
     let intent = load_usage_intent(&options.input.join("usage-intent.yaml"))?;
     let mut claims: Vec<Claim> = read_jsonl(&options.input.join("claims.jsonl"))?;
+    let mut invalid_claim_diagnostics = Vec::new();
+    claims.retain(|claim| {
+        let Err(reason) = claim.validate() else {
+            return true;
+        };
+        invalid_claim_diagnostics.push(Diagnostic {
+            id: format!("diag_recompile_invalid_{}", claim.id),
+            code: "FRG-CST-INVALID-CLAIM".to_owned(),
+            severity: DiagnosticSeverity::Warning,
+            message: "既存Buildの不正なClaimを再コンパイル時に除外しました".to_owned(),
+            target_ids: vec![claim.id.clone()],
+            evidence_ids: claim
+                .evidence
+                .iter()
+                .map(|reference| reference.evidence_id.clone())
+                .collect(),
+            reason: reason.to_owned(),
+            suggestions: vec!["元の抽出診断とEvidenceを確認してください".to_owned()],
+            questions: Vec::new(),
+        });
+        false
+    });
+    let revalidated_rejections = invalid_claim_diagnostics.len();
     let mut evidence: Vec<PromptEvidence> = read_jsonl(&options.input.join("evidence.jsonl"))?;
     let source_manifest: SourceManifest =
         serde_json::from_slice(&fs::read(control.join("manifest.json"))?)
@@ -515,6 +538,7 @@ pub fn recompile_build(options: &RecompileOptions) -> Result<CompileResult> {
             .into_iter()
             .filter(|item| !item.code.starts_with("FRG-CST-"))
             .collect();
+    diagnostics.extend(invalid_claim_diagnostics);
     if intent_requests_checklist_completeness(&intent) {
         diagnostics.extend(checklist_completeness_diagnostics(&evidence));
     }
@@ -667,7 +691,7 @@ pub fn recompile_build(options: &RecompileOptions) -> Result<CompileResult> {
             evidence_units: evidence.len(),
             claim_candidates: old_manifest.metrics.claim_candidates,
             claims: claims.len(),
-            rejected_claims: old_manifest.metrics.rejected_claims,
+            rejected_claims: old_manifest.metrics.rejected_claims + revalidated_rejections,
             conflicts: conflict_analysis.conflicts.len(),
             unresolved_conflicts: unresolved,
             llm_calls: 0,

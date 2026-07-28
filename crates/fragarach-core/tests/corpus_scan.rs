@@ -15,9 +15,9 @@ fn scans_the_aobane_corpus_end_to_end() {
     init_workspace(workspace.path()).unwrap();
 
     let first = scan(&source, workspace.path()).unwrap();
-    assert_eq!(first.summary.total_current, 25);
-    assert_eq!(first.summary.added, 25);
-    assert_eq!(first.summary.parsed_documents, 24);
+    assert_eq!(first.summary.total_current, 47);
+    assert_eq!(first.summary.added, 47);
+    assert_eq!(first.summary.parsed_documents, 46);
     assert_eq!(first.summary.duplicates, 1);
     assert_eq!(first.summary.errors, 0);
     assert_eq!(first.summary.unsupported, 0);
@@ -39,7 +39,7 @@ fn scans_the_aobane_corpus_end_to_end() {
     );
 
     let second = scan(&source, workspace.path()).unwrap();
-    assert_eq!(second.summary.unchanged, 25);
-    assert_eq!(second.summary.parse_cache_hits, 24);
+    assert_eq!(second.summary.unchanged, 47);
+    assert_eq!(second.summary.parse_cache_hits, 46);
     assert_eq!(second.summary.parsed_now, 0);
 }
