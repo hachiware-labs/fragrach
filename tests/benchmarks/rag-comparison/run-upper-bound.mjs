@@ -409,6 +409,7 @@ export function buildActualChunks(buildDirectories, options = {}) {
       .map((evidence) => ({
         source: normalizeSource(`sources/${evidence.source_path}`),
         section: (evidence.heading_path ?? []).join(" / ") || "本文",
+        text: evidence.text,
       }));
   const unitsByEvidence = new Map();
   if (evidenceFallback) {
@@ -446,6 +447,7 @@ export function buildActualChunks(buildDirectories, options = {}) {
       const authorityRank = precedence.indexOf(authority);
       return {
       id: `actual:evidence:${key}`,
+      unit_type: "claim_evidence",
       intent_id: intentId,
       valid_from: evidence.valid_from,
       valid_to: evidence.valid_to,
@@ -459,7 +461,12 @@ export function buildActualChunks(buildDirectories, options = {}) {
       ].map((sourcePath) => ({
         source: normalizeSource(`sources/${sourcePath}`),
         section: (evidence.heading_path ?? []).join(" / ") || "本文",
+        text: evidence.text,
       })),
+      evidence_excerpt: evidence.text,
+      authority,
+      authority_rank: authorityRank >= 0 ? authorityRank + 1 : null,
+      claims: [...claims.values()],
       text: [
         "種別: Compiled Retrieval Unit",
         `根拠位置: ${(evidence.heading_path ?? []).join(" / ") || "本文"}`,
@@ -505,12 +512,22 @@ export function buildActualChunks(buildDirectories, options = {}) {
     );
     chunks.push({
       id: `actual:conflict:${conflict.intent_id}/${conflict.id}`,
+      unit_type: "conflict",
       intent_id: conflict.intent_id,
       validity_ranges: claims.map((claim) => ({
         valid_from: claim.valid_from,
         valid_to: claim.valid_to,
       })),
       evidence: claims.flatMap(claimEvidence),
+      conflict: {
+        id: conflict.id,
+        kind: conflict.kind,
+        status: conflict.status,
+        resolution: conflict.resolution,
+        diagnostic_message: diagnostic?.message,
+        diagnostic_reason: diagnostic?.reason,
+        claims,
+      },
       text: [
         "種別: Conflict",
         `分類: ${conflict.kind}`,
@@ -542,6 +559,7 @@ export function buildActualChunks(buildDirectories, options = {}) {
       .filter(Boolean);
     chunks.push({
       id: `actual:diagnostic:${diagnostic.intent_id}/${diagnostic.id}`,
+      unit_type: "diagnostic",
       intent_id: diagnostic.intent_id,
       valid_from: cited[0]?.valid_from,
       valid_to: cited[0]?.valid_to,
@@ -552,6 +570,7 @@ export function buildActualChunks(buildDirectories, options = {}) {
         ].map((sourcePath) => ({
           source: normalizeSource(`sources/${sourcePath}`),
           section: (item.heading_path ?? []).join(" / ") || "本文",
+          text: item.text,
         })),
       ),
       text: [
@@ -700,7 +719,11 @@ export function expandedEvidence(retrieved) {
       const key = `${reference.source}#${reference.section}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      evidence.push({ ...reference, rank: index + 1 });
+      evidence.push({
+        ...reference,
+        rank: index + 1,
+        retrieval_text: item.document.text,
+      });
     }
   }
   return evidence;
@@ -709,12 +732,20 @@ export function expandedEvidence(retrieved) {
 function evidenceMatches(left, right) {
   const leftSection = String(left.section ?? "").trim();
   const rightSection = String(right.section ?? "").trim();
-  return (
+  const locationMatches =
     normalizeSource(left.source) === normalizeSource(right.source) &&
     (!left.section ||
       leftSection === rightSection ||
       rightSection.endsWith(` / ${leftSection}`) ||
-      leftSection.endsWith(` / ${rightSection}`))
+      leftSection.endsWith(` / ${rightSection}`));
+  if (!locationMatches) return false;
+  const contentTerms = left.content_terms ?? [];
+  if (contentTerms.length === 0) return true;
+  const retrievalText = String(right.retrieval_text ?? right.text ?? "")
+    .normalize("NFKC")
+    .toLowerCase();
+  return contentTerms.every((term) =>
+    retrievalText.includes(String(term).normalize("NFKC").toLowerCase()),
   );
 }
 
@@ -866,6 +897,358 @@ function contextText(questionId, retrieved) {
       ].join("\n");
     })
     .join("\n\n");
+}
+
+function searchForQuestion(index, question, query, limit, unitFilter = null) {
+  const supportsIntentFilter = index.documents.some(
+    (document) => document.intent_id,
+  );
+  return index.search(
+    `${query}\n対象時点: ${question.as_of}`,
+    limit,
+    (document) =>
+      (!supportsIntentFilter ||
+        (document.intent_id === question.intent_id &&
+          documentMatchesAsOf(document, question.as_of))) &&
+      (!unitFilter || unitFilter(document)),
+  );
+}
+
+function roundRobinUnique(resultLists, limit, seen = new Set()) {
+  const selected = [];
+  const maxLength = Math.max(0, ...resultLists.map((items) => items.length));
+  for (let rank = 0; rank < maxLength && selected.length < limit; rank += 1) {
+    for (const items of resultLists) {
+      const item = items[rank];
+      if (!item || seen.has(item.document.id)) continue;
+      seen.add(item.document.id);
+      selected.push(item);
+      if (selected.length === limit) break;
+    }
+  }
+  return selected;
+}
+
+function evidenceKey(reference) {
+  return `${normalizeSource(reference.source)}#${reference.section ?? ""}`;
+}
+
+function relationQueryHints(text) {
+  const hints = [];
+  if (/レビュー/.test(text)) hints.push("requires_review");
+  if (/承認/.test(text)) hints.push("requires_approval");
+  if (/誰|担当|責任者|所有者/.test(text)) hints.push("has_owner");
+  if (/期限|いつ|何営業日|何日|何時間|以内/.test(text)) {
+    hints.push("deadline", "review_deadline", "notification_deadline");
+  }
+  if (/省略|不要|対象外/.test(text)) hints.push("allows_review_omission");
+  return [...new Set(hints)].join(" ");
+}
+
+function canonicalTermsFromResults(results) {
+  const terms = new Set();
+  for (const item of results) {
+    if (item.document.authority !== "corporate_reference") continue;
+    for (const match of String(item.document.evidence_excerpt ?? "").matchAll(
+      /\*\*([^*]+)\*\*/g,
+    )) {
+      terms.add(match[1].trim());
+    }
+  }
+  return [...terms].filter(Boolean).slice(0, 6);
+}
+
+export function assembleDossierRetrieval(
+  index,
+  fallbackIndex,
+  question,
+  plan,
+  topK,
+  missingSlotIds = [],
+) {
+  const searchSlots = (canonicalTerms = []) => plan.slots.map((slot) =>
+    searchForQuestion(
+      index,
+      question,
+      `${question.question}\n回答項目: ${slot.label}\n検索語: ${slot.search_query}` +
+        `\n関係ヒント: ${relationQueryHints(`${question.question} ${slot.label}`)}` +
+        (canonicalTerms.length > 0
+          ? `\n正規語: ${canonicalTerms.join(" ")}`
+          : ""),
+      topK,
+      (document) => document.unit_type !== "conflict",
+    ),
+  );
+  let claimLists = searchSlots();
+  const initial = roundRobinUnique(claimLists, topK);
+  const canonicalTerms = canonicalTermsFromResults(initial);
+  if (canonicalTerms.length > 0) {
+    claimLists = searchSlots(canonicalTerms);
+  }
+  const primary = roundRobinUnique(claimLists, topK);
+  const primaryEvidence = new Set(
+    primary.flatMap((item) => item.document.evidence ?? []).map(evidenceKey),
+  );
+  const conflictCandidates = searchForQuestion(
+    index,
+    question,
+    `${question.question}\n${plan.slots.map((slot) => slot.search_query).join("\n")}`,
+    2,
+    (document) => document.unit_type === "conflict",
+  );
+  const conflicts = conflictCandidates.filter((item) => {
+    return (item.document.evidence ?? []).some((reference) =>
+      primaryEvidence.has(evidenceKey(reference)),
+    );
+  });
+
+  const fallback = [];
+  if (fallbackIndex && missingSlotIds.length > 0) {
+    const missing = new Set(missingSlotIds);
+    const fallbackLists = plan.slots
+      .filter((slot) => missing.has(slot.id))
+      .map((slot) =>
+        searchForQuestion(
+          fallbackIndex,
+          question,
+          `${question.question}\n不足している回答項目: ${slot.label}\n検索語: ${slot.search_query}`,
+          2,
+        ),
+      );
+    const seen = new Set(
+      [...primary, ...conflicts].map((item) => item.document.id),
+    );
+    fallback.push(...roundRobinUnique(fallbackLists, missing.size * 2, seen));
+  }
+  return {
+    primary,
+    conflicts,
+    fallback,
+    retrieved: [...primary, ...conflicts, ...fallback],
+  };
+}
+
+function dossierPlanSchema() {
+  return {
+    type: "object",
+    properties: {
+      slots: {
+        type: "array",
+        minItems: 1,
+        maxItems: 5,
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string" },
+            label: { type: "string" },
+            search_query: { type: "string" },
+          },
+          required: ["id", "label", "search_query"],
+        },
+      },
+    },
+    required: ["slots"],
+  };
+}
+
+function dossierPlanPrompt(question) {
+  return `あなたは社内知識検索のプランナーです。質問へ答えるために必要な回答項目を、重複のない1〜5個のslotへ分解してください。答えそのものは作らず、検索語を作ってください。
+
+規則:
+- idは短い英小文字のsnake_caseにする。
+- labelは「期限」「承認者」のような日本語の回答項目名にする。
+- search_queryは日本語の対象語と関係語を必ず含め、末尾にKnowledge Buildのpredicate候補を英語で1〜2個加える。例: 「外部仕様 変更 設計レビュー 必要 requires_review」。
+- 英語だけのsearch_queryは禁止する。
+- 質問の具体表現に対応しそうな社内の正規語・上位概念・同義語を併記する。例: 「顧客向け画面の挙動 外部仕様」、「責任者 承認者 owner approver」。
+- 各判断slotのsearch_queryにも質問の中心対象を繰り返す。関係語だけの検索にしない。
+- 条件、例外、現行/旧版、権威性の確認が質問に必要なら独立slotにする。
+- 同じ判断を「範囲」「要否」「工程」のように言い換えただけの重複slotは作らない。
+- 単なる「概要」slotは作らない。
+
+対象時点: ${question.as_of}
+質問: ${question.question}`;
+}
+
+function normalizeDossierPlan(content) {
+  const slots = [];
+  const ids = new Set();
+  for (const [index, raw] of (content.slots ?? []).entries()) {
+    const base = String(raw.id ?? `slot_${index + 1}`)
+      .toLowerCase()
+      .replace(/[^a-z0-9_]+/g, "_")
+      .replace(/^_+|_+$/g, "") || `slot_${index + 1}`;
+    let id = base;
+    let suffix = 2;
+    while (ids.has(id)) id = `${base}_${suffix++}`;
+    ids.add(id);
+    slots.push({
+      id,
+      label: String(raw.label ?? id).trim(),
+      search_query: String(raw.search_query ?? raw.label ?? id).trim(),
+    });
+  }
+  if (slots.length === 0) {
+    throw new Error("dossier plan did not contain answer slots");
+  }
+  return { slots: slots.slice(0, 5) };
+}
+
+function dossierSlotSchema(plan) {
+  return {
+    type: "object",
+    properties: {
+      behavior: {
+        type: "string",
+        enum: [
+          "answer",
+          "answer_with_conflict_disclosure",
+          "answer_with_temporal_resolution",
+          "insufficient_information",
+        ],
+      },
+      slots: {
+        type: "array",
+        minItems: plan.slots.length,
+        maxItems: plan.slots.length,
+        items: {
+          type: "object",
+          properties: {
+            slot_id: {
+              type: "string",
+              enum: plan.slots.map((slot) => slot.id),
+            },
+            status: {
+              type: "string",
+              enum: ["supported", "unresolved", "missing"],
+            },
+            value: { type: "string" },
+            citation_ids: {
+              type: "array",
+              items: { type: "string" },
+            },
+          },
+          required: ["slot_id", "status", "value", "citation_ids"],
+        },
+      },
+      guardrails: {
+        type: "array",
+        items: { type: "string" },
+      },
+    },
+    required: ["behavior", "slots", "guardrails"],
+  };
+}
+
+function dossierSlotPrompt(question, plan, dossier) {
+  const conflicts = dossier.conflicts.length > 0
+    ? dossier.conflicts
+        .map((item) => item.document.text)
+        .join("\n\n")
+    : "関連するConflictは取得されていません。";
+  return `あなたはEvidence Dossierの組立担当です。検索資料だけを使い、各Answer Slotを構造化してください。まだ自然文の最終回答は作りません。
+
+規則:
+- status=supportedは、valueを直接支える根拠IDがある場合だけ。
+- status=unresolvedは、候補が矛盾し権威・時点でも一意に解消できない場合。valueに候補と判断不能理由を書く。
+- status=missingは資料が不足する場合。推測しない。
+- citation_idsにはvalueを支える角括弧内IDを入れる。
+- 正式文書、時点、権威順位を優先する。
+- Conflictが質問の対象に関係する場合は隠さず、behaviorをanswer_with_conflict_disclosureにする。
+
+対象時点: ${question.as_of}
+質問: ${question.question}
+Answer Slots:
+${plan.slots.map((slot) => `- ${slot.id}: ${slot.label}`).join("\n")}
+
+取得資料:
+${contextText(question.id, dossier.retrieved)}
+
+Conflict別枠:
+${conflicts}`;
+}
+
+function normalizeDossierSlots(content, plan, question, retrieved) {
+  const lookup = citationLookup(question, retrieved);
+  const rawById = new Map(
+    (content.slots ?? []).map((slot) => [slot.slot_id, slot]),
+  );
+  const slots = plan.slots.map((planned) => {
+    const raw = rawById.get(planned.id) ?? {};
+    const citationIds = [...new Set((raw.citation_ids ?? [])
+      .map((id) => String(id).trim().replace(/^\[|\]$/g, ""))
+      .filter((id) => lookup.has(id)))];
+    const requestedStatus = ["supported", "unresolved", "missing"].includes(
+      raw.status,
+    )
+      ? raw.status
+      : "missing";
+    const status =
+      requestedStatus !== "missing" && citationIds.length === 0
+        ? "missing"
+        : requestedStatus;
+    return {
+      ...planned,
+      status,
+      value: status === "missing"
+        ? String(raw.value || "根拠不足")
+        : String(raw.value ?? "").trim(),
+      citation_ids: citationIds,
+    };
+  });
+  const hasUnresolved = slots.some((slot) => slot.status === "unresolved");
+  const hasMissing = slots.some((slot) => slot.status === "missing");
+  const allowedBehaviors = new Set([
+    "answer",
+    "answer_with_conflict_disclosure",
+    "answer_with_temporal_resolution",
+    "insufficient_information",
+  ]);
+  return {
+    behavior: hasUnresolved
+      ? "answer_with_conflict_disclosure"
+      : hasMissing
+        ? "insufficient_information"
+        : allowedBehaviors.has(content.behavior)
+          ? content.behavior
+          : "answer",
+    slots,
+    guardrails: (content.guardrails ?? []).map(String),
+  };
+}
+
+function dossierAnswerPrompt(question, structured) {
+  return `あなたは検証済みAnswer Slotsを自然な日本語へ変換する担当です。新しい事実を考えず、slotのvalueだけを使って簡潔に回答してください。
+
+規則:
+- supportedの内容は明確に述べる。
+- unresolvedは候補と矛盾を明示し、一意に断定しない。
+- missingは不足を明示する。
+- citation_idsには、使用した全slotのIDをそのまま入れる。
+- behaviorは指定値を変更しない。
+
+質問: ${question.question}
+指定behavior: ${structured.behavior}
+Answer Slots:
+${structured.slots
+    .map(
+      (slot) =>
+        `- ${slot.label}: status=${slot.status}; value=${slot.value}; citations=${slot.citation_ids.join(",")}`,
+    )
+    .join("\n")}
+Guardrails:
+${structured.guardrails.map((item) => `- ${item}`).join("\n") || "- なし"}`;
+}
+
+function combineUsages(usages) {
+  return {
+    promptTokens: usages.every((usage) => usage.promptTokens !== null)
+      ? usages.reduce((sum, usage) => sum + usage.promptTokens, 0)
+      : null,
+    outputTokens: usages.every((usage) => usage.outputTokens !== null)
+      ? usages.reduce((sum, usage) => sum + usage.outputTokens, 0)
+      : null,
+    durationMs: usages.reduce((sum, usage) => sum + usage.durationMs, 0),
+  };
 }
 
 function answerPrompt(questions, retrievalByQuestion) {
@@ -1021,13 +1404,162 @@ function unsupportedCitations(citations, retrievedEvidence) {
 async function runPipeline({
   label,
   index,
+  fallbackIndex = null,
+  pipelineMode = "direct",
   questions,
   topK,
   endpoint,
   model,
   seed,
 }) {
-  const retrievalByQuestion = retrieve(index, questions, topK);
+  const retrievalByQuestion =
+    pipelineMode === "direct" ? retrieve(index, questions, topK) : new Map();
+  if (pipelineMode === "direct") {
+    const retrievalMacro = questions.reduce(
+      (sum, question) =>
+        sum +
+        retrievalRecall(
+          question,
+          retrievalByQuestion.get(question.id) ?? [],
+        ),
+      0,
+    ) / questions.length;
+    console.log(
+      `${label}: retrieval evidence recall@${topK} ${(retrievalMacro * 100).toFixed(1)}%`,
+    );
+  }
+  console.log(
+    `${label}: generating ${questions.length} isolated ${pipelineMode === "dossier" ? "dossiers and " : ""}answers with ${model}`,
+  );
+  const answerByQuestion = new Map();
+  const answerUsageByQuestion = new Map();
+  const answerUsages = [];
+  const dossierByQuestion = new Map();
+  for (const [questionIndex, question] of questions.entries()) {
+    if (pipelineMode === "dossier") {
+      const stageUsages = [];
+      const planResponse = await ollamaChat(
+        endpoint,
+        model,
+        dossierPlanPrompt(question),
+        dossierPlanSchema(),
+        seed + questionIndex,
+      );
+      stageUsages.push(planResponse.usage);
+      const plan = normalizeDossierPlan(planResponse.content);
+      let dossier = assembleDossierRetrieval(
+        index,
+        fallbackIndex,
+        question,
+        plan,
+        topK,
+      );
+      let slotResponse = await ollamaChat(
+        endpoint,
+        model,
+        dossierSlotPrompt(question, plan, dossier),
+        dossierSlotSchema(plan),
+        seed + 200 + questionIndex,
+      );
+      stageUsages.push(slotResponse.usage);
+      let structured = normalizeDossierSlots(
+        slotResponse.content,
+        plan,
+        question,
+        dossier.retrieved,
+      );
+      const missingSlotIds = structured.slots
+        .filter((slot) => slot.status === "missing")
+        .map((slot) => slot.id);
+      if (fallbackIndex && missingSlotIds.length > 0) {
+        dossier = assembleDossierRetrieval(
+          index,
+          fallbackIndex,
+          question,
+          plan,
+          topK,
+          missingSlotIds,
+        );
+        slotResponse = await ollamaChat(
+          endpoint,
+          model,
+          dossierSlotPrompt(question, plan, dossier),
+          dossierSlotSchema(plan),
+          seed + 400 + questionIndex,
+        );
+        stageUsages.push(slotResponse.usage);
+        structured = normalizeDossierSlots(
+          slotResponse.content,
+          plan,
+          question,
+          dossier.retrieved,
+        );
+      }
+      const answerResponse = await ollamaChat(
+        endpoint,
+        model,
+        dossierAnswerPrompt(question, structured),
+        answerSchema([question.id]),
+        seed + 600 + questionIndex,
+      );
+      stageUsages.push(answerResponse.usage);
+      const requiredCitationIds = [...new Set(
+        structured.slots.flatMap((slot) => slot.citation_ids),
+      )];
+      const rendered = answerResponse.content.results?.find(
+        (result) => result.question_id === question.id,
+      );
+      if (rendered) {
+        rendered.behavior = structured.behavior;
+        rendered.citation_ids = requiredCitationIds;
+      }
+      retrievalByQuestion.set(question.id, dossier.retrieved);
+      const oneQuestionRetrieval = new Map([
+        [question.id, dossier.retrieved],
+      ]);
+      const normalized = normalizeAnswerResults(
+        answerResponse,
+        [question],
+        oneQuestionRetrieval,
+      );
+      answerByQuestion.set(question.id, normalized.get(question.id));
+      const combinedUsage = combineUsages(stageUsages);
+      answerUsageByQuestion.set(question.id, combinedUsage);
+      answerUsages.push(combinedUsage);
+      dossierByQuestion.set(question.id, {
+        plan,
+        slots: structured.slots,
+        guardrails: structured.guardrails,
+        conflicts: dossier.conflicts.map((item) => item.document.id),
+        fallback_units: dossier.fallback.map((item) => item.document.id),
+      });
+    } else {
+      const oneQuestionRetrieval = new Map([
+        [question.id, retrievalByQuestion.get(question.id) ?? []],
+      ]);
+      const answerResponse = await ollamaChat(
+        endpoint,
+        model,
+        answerPrompt([question], oneQuestionRetrieval),
+        answerSchema([question.id]),
+        seed + questionIndex,
+      );
+      const normalized = normalizeAnswerResults(
+        answerResponse,
+        [question],
+        oneQuestionRetrieval,
+      );
+      answerByQuestion.set(question.id, normalized.get(question.id));
+      answerUsageByQuestion.set(question.id, answerResponse.usage);
+      answerUsages.push(answerResponse.usage);
+    }
+    if ((questionIndex + 1) % 4 === 0 || questionIndex + 1 === questions.length) {
+      console.log(
+        `${label}: answered ${questionIndex + 1}/${questions.length}`,
+      );
+    }
+  }
+
   const retrievalMacro =
     questions.reduce(
       (sum, question) =>
@@ -1038,40 +1570,10 @@ async function runPipeline({
         ),
       0,
     ) / questions.length;
-
-  console.log(
-    `${label}: retrieval evidence recall@${topK} ${(retrievalMacro * 100).toFixed(1)}%`,
-  );
-  console.log(
-    `${label}: generating ${questions.length} isolated answers with ${model}`,
-  );
-  const answerByQuestion = new Map();
-  const answerUsageByQuestion = new Map();
-  const answerUsages = [];
-  for (const [questionIndex, question] of questions.entries()) {
-    const oneQuestionRetrieval = new Map([
-      [question.id, retrievalByQuestion.get(question.id) ?? []],
-    ]);
-    const answerResponse = await ollamaChat(
-      endpoint,
-      model,
-      answerPrompt([question], oneQuestionRetrieval),
-      answerSchema([question.id]),
-      seed + questionIndex,
+  if (pipelineMode === "dossier") {
+    console.log(
+      `${label}: dossier evidence recall@${topK} ${(retrievalMacro * 100).toFixed(1)}%`,
     );
-    const normalized = normalizeAnswerResults(
-      answerResponse,
-      [question],
-      oneQuestionRetrieval,
-    );
-    answerByQuestion.set(question.id, normalized.get(question.id));
-    answerUsageByQuestion.set(question.id, answerResponse.usage);
-    answerUsages.push(answerResponse.usage);
-    if ((questionIndex + 1) % 4 === 0 || questionIndex + 1 === questions.length) {
-      console.log(
-        `${label}: answered ${questionIndex + 1}/${questions.length}`,
-      );
-    }
   }
 
   console.log(`${label}: judging answers with isolated blind prompts`);
@@ -1115,6 +1617,9 @@ async function runPipeline({
       retrieved_evidence: retrievedEvidence,
       citations,
       behavior: judgment.behavior,
+      ...(dossierByQuestion.has(question.id)
+        ? { dossier: dossierByQuestion.get(question.id) }
+        : {}),
       judgment: {
         satisfied_answer_elements: judgment.satisfied_answer_elements,
         present_forbidden_answer_elements:
@@ -1188,6 +1693,7 @@ function parseArguments(argv) {
     actualOnly: false,
     actualVariant: "baseline",
     intents: [],
+    questionIds: [],
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -1212,6 +1718,8 @@ function parseArguments(argv) {
       options.actualVariant = argv[++index];
     } else if (argument === "--intent") {
       options.intents.push(argv[++index]);
+    } else if (argument === "--question") {
+      options.questionIds.push(argv[++index]);
     } else if (argument === "--help" || argument === "-h") {
       options.help = true;
     } else {
@@ -1237,8 +1745,9 @@ Options:
   --actual-only      Skip Raw and Oracle answer generation
   --actual-variant <name>
                      Actual adapter: baseline, aliases, evidence-fallback,
-                     fallback-no-authority, or fallback-evidence-only
+                     fallback-no-authority, fallback-evidence-only, or dossier
   --intent <id>      Evaluate only this Intent (repeatable)
+  --question <id>    Evaluate only this question ID (repeatable)
   --help             Show this help`);
 }
 
@@ -1268,6 +1777,7 @@ export function actualVariantOptions(name) {
       includeClaims: false,
       includeDiagnosticAliases: true,
     },
+    dossier: {},
   };
   if (!(name in variants)) {
     throw new Error(`unknown --actual-variant: ${name}`);
@@ -1286,14 +1796,22 @@ async function main() {
   }
 
   fs.mkdirSync(options.outputDirectory, { recursive: true });
-  const questions = filterQuestionsByIntent(
+  const intentQuestions = filterQuestionsByIntent(
     readJsonl(
       path.join(options.corpusRoot, "evaluation/questions.jsonl"),
     ),
     options.intents,
   );
+  const selectedQuestionIds = new Set(options.questionIds);
+  const questions = options.questionIds.length === 0
+    ? intentQuestions
+    : intentQuestions.filter((question) =>
+        selectedQuestionIds.has(question.id),
+      );
   if (questions.length === 0) {
-    throw new Error("--intent did not match any evaluation questions");
+    throw new Error(
+      "--intent/--question did not match any evaluation questions",
+    );
   }
   const expected = readJson(
     path.join(options.corpusRoot, "ground-truth/expected.json"),
@@ -1306,6 +1824,15 @@ async function main() {
           options.compiledBuilds,
           actualVariantOptions(options.actualVariant),
         )
+      : [];
+  const actualFallbackChunks =
+    options.compiledBuilds.length > 0 && options.actualVariant === "dossier"
+      ? buildActualChunks(options.compiledBuilds, {
+          evidenceFallback: true,
+          includeClaims: false,
+          includeConflicts: false,
+          includeDiagnosticAliases: true,
+        })
       : [];
   if (options.actualOnly && actualChunks.length === 0) {
     throw new Error("--actual-only requires at least one --compiled-build");
@@ -1336,6 +1863,12 @@ async function main() {
       ? await runPipeline({
           label: "actual-compiled",
           index: new Bm25Index(actualChunks),
+          fallbackIndex:
+            actualFallbackChunks.length > 0
+              ? new Bm25Index(actualFallbackChunks)
+              : null,
+          pipelineMode:
+            options.actualVariant === "dossier" ? "dossier" : "direct",
           questions,
           ...options,
         })
@@ -1363,6 +1896,7 @@ async function main() {
     seed: options.seed,
     actual_variant: options.actualVariant,
     intent_filter: options.intents,
+    question_filter: options.questionIds,
     generated_at: new Date().toISOString(),
     indexes: {
       raw_chunks: rawChunks.length,

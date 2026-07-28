@@ -7,10 +7,12 @@ import path from "node:path";
 import {
   Bm25Index,
   actualVariantOptions,
+  assembleDossierRetrieval,
   buildActualChunks,
   buildOracleChunks,
   documentMatchesAsOf,
   filterQuestionsByIntent,
+  retrievalRecall,
   tokenize,
 } from "./run-upper-bound.mjs";
 
@@ -20,9 +22,94 @@ test("Actualアブレーション名を検索単位オプションへ変換す�
     evidenceFallback: true,
     includeDiagnosticAliases: true,
   });
+  assert.deepEqual(actualVariantOptions("dossier"), {});
   assert.throws(
     () => actualVariantOptions("unknown"),
     /unknown --actual-variant/,
+  );
+});
+
+test("根拠再現率は同じ見出し内の必要本文まで照合する", () => {
+  const question = {
+    required_evidence: [{
+      source: "sources/policy.md",
+      section: "レビュー",
+      content_terms: ["外部仕様", "設計レビュー"],
+    }],
+  };
+  const wrongParagraph = [{
+    document: {
+      evidence: [{ source: "sources/policy.md", section: "レビュー" }],
+      text: "誤字修正はレビューを省略できる",
+    },
+  }];
+  const rightParagraph = [{
+    document: {
+      evidence: [{ source: "sources/policy.md", section: "レビュー" }],
+      text: "外部仕様を変更する場合は設計レビューが必要",
+    },
+  }];
+  assert.equal(retrievalRecall(question, wrongParagraph), 0);
+  assert.equal(retrievalRecall(question, rightParagraph), 1);
+});
+
+test("Evidence Dossierはslot別Claimと関連Conflictを分けて集める", () => {
+  const documents = [
+    {
+      id: "review",
+      unit_type: "claim_evidence",
+      intent_id: "design-review",
+      text: "外部仕様 変更 requires_review 設計レビューが必要",
+      evidence: [{ source: "sources/policy.md", section: "レビュー" }],
+    },
+    {
+      id: "deadline",
+      unit_type: "claim_evidence",
+      intent_id: "design-review",
+      text: "事後レビュー deadline 二営業日以内",
+      evidence: [{ source: "sources/policy.md", section: "期限" }],
+    },
+    {
+      id: "conflict",
+      unit_type: "conflict",
+      intent_id: "design-review",
+      text: "事後レビュー期限 二営業日 五営業日 conflict",
+      evidence: [{ source: "sources/policy.md", section: "期限" }],
+    },
+  ];
+  const question = {
+    id: "q1",
+    intent_id: "design-review",
+    question: "外部仕様変更のレビューと期限は",
+    as_of: "2026-06-30",
+  };
+  const dossier = assembleDossierRetrieval(
+    new Bm25Index(documents),
+    null,
+    question,
+    {
+      slots: [
+        {
+          id: "review",
+          label: "レビュー要否",
+          search_query: "外部仕様 requires_review",
+        },
+        {
+          id: "deadline",
+          label: "期限",
+          search_query: "事後レビュー deadline",
+        },
+      ],
+    },
+    2,
+  );
+  assert.deepEqual(
+    dossier.primary.map((item) => item.document.id).sort(),
+    ["deadline", "review"],
+  );
+  assert.deepEqual(
+    dossier.conflicts.map((item) => item.document.id),
+    ["conflict"],
   );
 });
 

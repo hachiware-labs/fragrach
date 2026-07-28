@@ -90,22 +90,31 @@ function validateResults(results, knownQuestionIds, label) {
   }
 }
 
-function evidenceMatches(required, actual) {
+function evidenceMatches(required, actual, contentAware = false) {
   if (normalizeSource(required.source) !== normalizeSource(actual.source)) return false;
-  if (!required.section) return true;
   const requiredSection = String(required.section).trim();
   const actualSection = String(actual.section ?? "").trim();
-  return (
+  const sectionMatches =
+    !required.section ||
     requiredSection === actualSection ||
     actualSection.endsWith(` / ${requiredSection}`) ||
-    requiredSection.endsWith(` / ${actualSection}`)
+    requiredSection.endsWith(` / ${actualSection}`);
+  if (!sectionMatches) return false;
+  if (!contentAware || (required.content_terms ?? []).length === 0) return true;
+  const retrievalText = String(actual.retrieval_text ?? actual.text ?? "")
+    .normalize("NFKC")
+    .toLowerCase();
+  return required.content_terms.every((term) =>
+    retrievalText.includes(String(term).normalize("NFKC").toLowerCase()),
   );
 }
 
-function recall(requiredItems, actualItems) {
+function recall(requiredItems, actualItems, contentAware = false) {
   if (requiredItems.length === 0) return 1;
   const matched = requiredItems.filter((required) =>
-    actualItems.some((actual) => evidenceMatches(required, actual)),
+    actualItems.some((actual) =>
+      evidenceMatches(required, actual, contentAware),
+    ),
   ).length;
   return matched / requiredItems.length;
 }
@@ -237,7 +246,11 @@ export function scoreRun(questions, results, options = {}) {
       question.expected_answer_elements.length === 0
         ? 1
         : judgment.satisfied.size / question.expected_answer_elements.length;
-    const evidenceRecall = recall(question.required_evidence, retrieved);
+    const evidenceRecall = recall(
+      question.required_evidence,
+      retrieved,
+      true,
+    );
     const citationRecall = recall(question.required_evidence, result.citations);
     const behaviorPass = result.behavior === question.expected_behavior;
     const forbiddenError = judgment.forbidden.size > 0;

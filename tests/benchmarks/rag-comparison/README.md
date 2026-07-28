@@ -52,7 +52,7 @@
 }
 ```
 
-`retrieved_evidence`は検索器が返した順序を`rank`で記録する。`citations`には最終回答が実際に根拠として示した箇所を入れる。パスはコーパスを起点とする`/`区切りの相対パスに統一する。
+`retrieved_evidence`は検索器が返した順序を`rank`で記録する。`required_evidence`に`content_terms`がある質問では、文書と見出しだけでなく、`retrieval_text`に必要な本文語が含まれる場合だけ取得成功とする。同じ見出しにある別段落を正解として数えないためである。`citations`には最終回答が実際に根拠として示した箇所を入れる。パスはコーパスを起点とする`/`区切りの相対パスに統一する。
 
 `judgment`は回答生成とは別の判定処理が付与する。判定時には系統名を隠し、同じモデル、プロンプト、温度を使用する。人手で判定する場合も、`questions.jsonl`にある期待要素のうち満たしたものと、実際に現れた禁止要素だけを記録する。`judgment`を省略した場合、評価器は単純な部分文字列一致へ切り替わるため、言い換えを含む本評価には適さない。
 
@@ -131,6 +131,17 @@ node tests/benchmarks/rag-comparison/run-upper-bound.mjs `
   --compiled-build target/expanded-builds-v1/incident-response `
   --compiled-build target/expanded-builds-v1/developer-onboarding `
   --compiled-build target/path/to/data-export-operation-build
+```
+
+`dossier`は、質問をAnswer Slotsへ分解し、Slot別のClaim検索、正規語展開、関連Conflictの別枠追加、Slot不足時だけのEvidence fallback、構造化回答、自然文生成を順に実行する。単一質問を調べる場合は`--question DR-001`のように質問IDを指定できる。
+
+```powershell
+node tests/benchmarks/rag-comparison/run-upper-bound.mjs `
+  --actual-only `
+  --actual-variant dossier `
+  --question DR-001 `
+  --compiled-build target/medium-builds-v1/design-review `
+  --compiled-build target/medium-builds-v1/incident-response
 ```
 
 実測と判断は`ABLATION_FINDINGS_ja.md`に記録している。

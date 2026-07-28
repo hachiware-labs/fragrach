@@ -164,3 +164,47 @@ test("文書タイトルを含む見出しパスは末尾セクションで照�
   assert.equal(report.metrics.evidence_recall_at_k, 1);
   assert.equal(report.metrics.citation_recall, 1);
 });
+
+test("本文条件がある根拠は同じ見出しの別段落を取得成功にしない", () => {
+  const contentQuestions = [{
+    id: "Q-CONTENT",
+    intent_id: "intent-a",
+    expected_behavior: "answer",
+    expected_answer_elements: ["レビューが必要"],
+    forbidden_answer_elements: [],
+    required_evidence: [{
+      source: "sources/policy.md",
+      section: "レビュー",
+      content_terms: ["外部仕様", "設計レビュー"],
+    }],
+    tags: ["evidence"],
+  }];
+  const result = {
+    question_id: "Q-CONTENT",
+    answer: "レビューが必要",
+    citations: [{ source: "sources/policy.md", section: "レビュー" }],
+    behavior: "answer",
+  };
+  const wrong = scoreRun(contentQuestions, [{
+    ...result,
+    retrieved_evidence: [{
+      source: "sources/policy.md",
+      section: "レビュー",
+      rank: 1,
+      retrieval_text: "誤字修正はレビューを省略できる",
+    }],
+  }]);
+  const right = scoreRun(contentQuestions, [{
+    ...result,
+    retrieved_evidence: [{
+      source: "sources/policy.md",
+      section: "レビュー",
+      rank: 1,
+      retrieval_text: "外部仕様の変更には設計レビューが必要",
+    }],
+  }]);
+
+  assert.equal(wrong.metrics.evidence_recall_at_k, 0);
+  assert.equal(wrong.metrics.citation_recall, 1);
+  assert.equal(right.metrics.evidence_recall_at_k, 1);
+});
