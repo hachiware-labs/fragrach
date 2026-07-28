@@ -1,0 +1,22 @@
+[package]
+name = "fragarach-build"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+fragarach-ir = { path = "../fragarach-ir" }
+fragarach-llm = { path = "../fragarach-llm" }
+fragarach-workspace = { path = "../fragarach-workspace" }
+globset.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+fragarach-core = { path = "../fragarach-core" }
+tempfile.workspace = true

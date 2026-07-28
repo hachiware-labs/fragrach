@@ -1,0 +1,9 @@
+{
+  "name": "@fragarach/cli-linux-x64",
+  "version": "0.1.0",
+  "description": "FRAGARACH Rust CLI for Linux x64",
+  "license": "UNLICENSED",
+  "os": ["linux"],
+  "cpu": ["x64"],
+  "files": ["bin"]
+}

@@ -1,0 +1,20 @@
+[package]
+name = "fragarach-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+fragarach-ir = { path = "../fragarach-ir" }
+fragarach-parser = { path = "../fragarach-parser" }
+fragarach-workspace = { path = "../fragarach-workspace" }
+globset.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
