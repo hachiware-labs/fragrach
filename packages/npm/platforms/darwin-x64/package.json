@@ -1,7 +1,7 @@
 {
   "name": "@fragarach/cli-darwin-x64",
   "version": "0.1.0",
-  "description": "FRAGARACH Rust CLI for macOS x64",
+  "description": "Fragrach Rust CLI for macOS x64",
   "license": "UNLICENSED",
   "os": ["darwin"],
   "cpu": ["x64"],

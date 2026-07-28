@@ -1,11 +1,11 @@
-# FRAGARACH マニュアル読者レビュー
+# Fragrach マニュアル読者レビュー
 
 評価対象: `docs/user-manual_ja.md`（2026-07-28版）  
 評価条件: マニュアルから想像できる情報だけを使い、実装、要件書、テストコードは参照しない。
 
 ## 読後の理解
 
-FRAGARACHはRAG製品ではなく、RAGへ登録する知識を利用目的別に改善する前処理CLIである。原文をEvidenceへ分け、LLMがClaim候補を抽出し、Rust側が根拠参照、時点、権威性、矛盾、不足を検証する。完成したKnowledge Buildは汎用JSONLとして出せるが、ベクトル化、検索基盤への登録、回答UIは利用者が用意する。
+FragrachはRAG製品ではなく、RAGへ登録する知識を利用目的別に改善する前処理CLIである。原文をEvidenceへ分け、LLMがClaim候補を抽出し、Rust側が根拠参照、時点、権威性、矛盾、不足を検証する。完成したKnowledge Buildは汎用JSONLとして出せるが、ベクトル化、検索基盤への登録、回答UIは利用者が用意する。
 
 中心機能を最初から最後まで試せることが分かる。`init`、`scan`、Intent検証、`compile`、Warning確認、`recompile`、`export`の関係も追える。通常RAGとの比較結果があるため、「何が改善し、何がまだ改善していないか」も判断できる。
 

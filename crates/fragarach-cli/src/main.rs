@@ -23,7 +23,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    #[command(about = "Initialize a FRAGARACH workspace")]
+    #[command(about = "Initialize a Fragrach workspace")]
     Init {
         #[arg(default_value = ".")]
         path: PathBuf,
@@ -149,7 +149,7 @@ fn main() -> Result<()> {
                     }))?
                 );
             } else {
-                println!("Initialized FRAGARACH workspace: {}", paths.root.display());
+                println!("Initialized Fragrach workspace: {}", paths.root.display());
                 println!("Control directory: {}", paths.control.display());
             }
         }

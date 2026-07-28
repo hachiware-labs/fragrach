@@ -1,16 +1,16 @@
-# Raw RAGとFRAGARACHの比較評価
+# Raw RAGとFragrachの比較評価
 
-このベンチマークは、同じSource Corpusから作った通常のRAGとFRAGARACH経由のRAGを、同じ質問と正解根拠で比較する。検索方式やモデルの差ではなく、RAGへ投入する知識をコンパイルした効果を測ることが目的である。
+このベンチマークは、同じSource Corpusから作った通常のRAGとFragrach経由のRAGを、同じ質問と正解根拠で比較する。検索方式やモデルの差ではなく、RAGへ投入する知識をコンパイルした効果を測ることが目的である。
 
 ## 比較する三つの系統
 
 | 系統 | 索引へ入れる内容 | 確認する効果 |
 |---|---|---|
 | `raw-rag` | `sources/`の文書を通常どおり分割したチャンク | 比較の基準値 |
-| `compiled-data` | FRAGARACHが生成したClaim、Evidence、Conflict | 投入データを改善した効果 |
-| `full-fragarach` | `compiled-data`にRetrieval ProfileとAnswer Contractを適用 | FRAGARACH全体の効果 |
+| `compiled-data` | Fragrachが生成したClaim、Evidence、Conflict | 投入データを改善した効果 |
+| `full-fragarach` | `compiled-data`にRetrieval ProfileとAnswer Contractを適用 | Fragrach全体の効果 |
 
-`raw-rag`と`compiled-data`では、Embeddingモデル、Vector Store、生成LLM、検索件数、温度、最大出力Tokenを同じにする。`full-fragarach`だけは、FRAGARACHが生成した検索・回答仕様を使うため、設定差を含む製品全体の評価となる。
+`raw-rag`と`compiled-data`では、Embeddingモデル、Vector Store、生成LLM、検索件数、温度、最大出力Tokenを同じにする。`full-fragarach`だけは、Fragrachが生成した検索・回答仕様を使うため、設定差を含む製品全体の評価となる。
 
 索引対象はコーパスの`sources/`だけである。`evaluation/`、`ground-truth/`、`intents/`、`scenarios/`を索引へ入れると正解が漏れるため、入力してはならない。
 
@@ -91,7 +91,7 @@ LLMの揺らぎを測る場合は、同じ条件で複数回実行し、一回�
 
 ## コンセプトの上限実験
 
-FRAGARACH本体のClaim抽出が完成する前に、コンパイル済み知識の改善余地を確認する場合は、Oracle Compiled実験を使う。
+Fragrach本体のClaim抽出が完成する前に、コンパイル済み知識の改善余地を確認する場合は、Oracle Compiled実験を使う。
 
 ```powershell
 node tests/benchmarks/rag-comparison/run-upper-bound.mjs `
@@ -101,7 +101,7 @@ node tests/benchmarks/rag-comparison/run-upper-bound.mjs `
 
 この実験では、`raw-rag`がSource文書の段落を直接検索し、`oracle-compiled`が`ground-truth/expected.json`のClaim、Conflict、Alias、Version Group、Event Sequence、Missing Informationを検索する。検索器は両者とも日本語文字n-gramを使う同一のBM25で、回答と判定には同じローカルOllamaモデルを使う。
 
-Oracleは実装済みFRAGARACHの精度を表さない。正しく知識をコンパイルできた場合の上限を測り、通常RAGに対して改善余地があるかを確認するための実験である。Oracleでも差が出ない場合は、コーパス、質問、検索単位、製品コンセプトのいずれかを見直す。差が出た場合は、その差を実際のコンパイラがどこまで再現できるかを次の評価対象にする。
+Oracleは実装済みFragrachの精度を表さない。正しく知識をコンパイルできた場合の上限を測り、通常RAGに対して改善余地があるかを確認するための実験である。Oracleでも差が出ない場合は、コーパス、質問、検索単位、製品コンセプトのいずれかを見直す。差が出た場合は、その差を実際のコンパイラがどこまで再現できるかを次の評価対象にする。
 
 結果は既定で`target/benchmarks/rag-comparison/`へ保存される。
 

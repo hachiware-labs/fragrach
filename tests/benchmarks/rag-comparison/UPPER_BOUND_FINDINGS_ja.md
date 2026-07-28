@@ -1,4 +1,4 @@
-# FRAGARACH RAG比較結果
+# Fragrach RAG比較結果
 
 実施日: 2026-07-28
 
@@ -24,7 +24,7 @@ Actual Knowledge Buildは、Raw RAGより正解根拠をtop 5へ取得しやす�
 - seed: 42
 - 質問ごとに回答と盲検判定を分離
 
-Oracleは`ground-truth/expected.json`から生成した理想知識であり、実装精度ではない。ActualはOllamaで抽出したFRAGARACHのBuildを使い、決定的な再コンパイルでFront Matter、権威性、重複別名、不足診断、Conflictを更新した。
+Oracleは`ground-truth/expected.json`から生成した理想知識であり、実装精度ではない。ActualはOllamaで抽出したFragrachのBuildを使い、決定的な再コンパイルでFront Matter、権威性、重複別名、不足診断、Conflictを更新した。
 
 ## 同一実験内の結果
 
@@ -74,7 +74,7 @@ Oracleの根拠再現率が最も高いのにStrict Passが低いことからも
 - 回答の完全性: 悪化している。96.9%から88.5%
 - 総合Strict Pass: 同等。50.0%
 
-このため、FRAGARACHのコンセプトは実データで試す価値があるが、0.1.0を精度向上製品として約束する段階ではない。次の合格条件は、Actualの根拠再現率を維持したまま、回答要素とStrict PassをRaw以上へ安定させることである。
+このため、Fragrachのコンセプトは実データで試す価値があるが、0.1.0を精度向上製品として約束する段階ではない。次の合格条件は、Actualの根拠再現率を維持したまま、回答要素とStrict PassをRaw以上へ安定させることである。
 
 ## 次の評価
 

@@ -6,7 +6,7 @@
     "stage:npm": "node scripts/stage-platform-binary.mjs",
     "test": "node --test tests/benchmarks/rag-comparison/*.test.mjs packages/npm/fragarach/test/*.test.mjs"
   },
-  "description": "FRAGARACHは、資料群と利用目的から、RAGへ投入する前の知識をコンパイルするツールです。検索APIやチャットUIは提供せず、原本へ遡れるEvidence、Claim、競合、検索仕様、回答仕様を目的別のKnowledge Buildとして生成します。",
+  "description": "Fragrachは、資料群と利用目的から、RAGへ投入する前の知識をコンパイルするツールです。検索APIやチャットUIは提供せず、原本へ遡れるEvidence、Claim、競合、検索仕様、回答仕様を目的別のKnowledge Buildとして生成します。",
   "main": "index.js",
   "directories": {
     "doc": "docs",

@@ -1,10 +1,10 @@
-# FRAGARACH Phase 1 実装計画
+# Fragrach Phase 1 実装計画
 
 進捗（2026-07-28）: Knowledge IR、Usage Intent、Evidence付きClaim抽出、時点・権威性・Conflict診断、Knowledge Build、Report、JSONL Exporter、走査制限、ワークスペースロック、利用量集計、npm配布構成まで実装した。Evidence付きConflict overrideとnpmレジストリ公開は未完了である。実測結果は`tests/benchmarks/rag-comparison/UPPER_BOUND_FINDINGS_ja.md`、現行手順は`docs/user-manual_ja.md`を正とする。
 
 ## 判断
 
-機能上の不足はある。現在はSource ManifestとParsed Documentまでで、FRAGARACHの中心価値であるUsage Intent、Claim、Conflict、Knowledge Buildを利用できない。この状態では、マニュアルを改善しても製品の良し悪しを読者が判断できない。
+機能上の不足はある。現在はSource ManifestとParsed Documentまでで、Fragrachの中心価値であるUsage Intent、Claim、Conflict、Knowledge Buildを利用できない。この状態では、マニュアルを改善しても製品の良し悪しを読者が判断できない。
 
 一方、実現不能と思われる設計上の障害は見えていない。難しいのは、LLM抽出の誤りをEvidence検証で抑えること、質問の対象時点で有効なClaimを選ぶこと、権威性と矛盾を安全に扱うことである。これらを避けて周辺機能を増やしても製品価値は確認できないため、最初の実装範囲に含める。
 
@@ -178,7 +178,7 @@ RustバイナリをOS別にビルドし、npmパッケージのランチャー�
 
 ## 品質評価
 
-実装後はOracle Compiledではなく、FRAGARACHが実際に生成したKnowledge Buildを使って比較する。
+実装後はOracle Compiledではなく、Fragrachが実際に生成したKnowledge Buildを使って比較する。
 
 比較条件:
 
@@ -186,7 +186,7 @@ RustバイナリをOS別にビルドし、npmパッケージのランチャー�
 - 同じ16問
 - 同じ検索方式、top-k、回答モデル、温度、seed
 - 質問ごとに独立した回答コンテキスト
-- Raw RAG、Actual Compiled、Full FRAGARACHの三系統
+- Raw RAG、Actual Compiled、Full Fragrachの三系統
 
 合格判断では一つの総合点だけを使わない。
 
@@ -236,4 +236,4 @@ LLMによる自己判定だけには依存しない。時点、数値、禁止�
 - LLMによる無根拠な自動Conflict解消
 - 全文書を対象にした完全な増分Knowledge Compile
 
-これらは有用だが、FRAGARACHが通常RAGより良い知識を作れるかを最初に確認するための必須条件ではない。
+これらは有用だが、Fragrachが通常RAGより良い知識を作れるかを最初に確認するための必須条件ではない。

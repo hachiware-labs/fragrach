@@ -1,6 +1,6 @@
-# FRAGARACH
+# Fragrach
 
-FRAGARACHは、資料群と利用目的から、RAGへ投入する前の知識をコンパイルするツールです。検索APIやチャットUIは提供せず、原本へ遡れるEvidence、Claim、競合、検索仕様、回答仕様を目的別のKnowledge Buildとして生成します。
+Fragrachは、資料群と利用目的から、RAGへ投入する前の知識をコンパイルするツールです。検索APIやチャットUIは提供せず、原本へ遡れるEvidence、Claim、競合、検索仕様、回答仕様を目的別のKnowledge Buildとして生成します。
 
 現在の開発版には、Rust CLI、差分走査、Usage Intent、OllamaによるEvidence付きClaim抽出、時点・権威性・矛盾・不足の診断、Knowledge Build、Report、JSONL Exporter、LLMを呼ばない再コンパイル、npmランチャーがあります。npmレジストリにはまだ公開していません。
 

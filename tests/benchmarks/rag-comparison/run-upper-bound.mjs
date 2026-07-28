@@ -1199,7 +1199,7 @@ Options:
   --top-k <number>   Retrieved chunks per question (default: 5)
   --seed <number>    Reproducibility seed (default: 42)
   --compiled-build <path>
-                     Add an actual FRAGARACH Knowledge Build (repeatable)
+                     Add an actual Fragrach Knowledge Build (repeatable)
   --actual-only      Skip Raw and Oracle answer generation
   --help             Show this help`);
 }

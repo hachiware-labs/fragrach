@@ -1,11 +1,11 @@
-# FRAGARACH ユーザーマニュアル
+# Fragrach ユーザーマニュアル
 
 対象バージョン: 0.1.0 開発版  
 更新日: 2026-07-28
 
-## FRAGARACHの役割
+## Fragrachの役割
 
-FRAGARACHは、RAGへ文書を登録する前に、資料群を利用目的別の知識へ変換するCLIです。通常のRAGが文書を検索して回答するのに対し、FRAGARACHはその入力を準備します。検索API、ベクトルデータベース、チャット画面は提供しません。
+Fragrachは、RAGへ文書を登録する前に、資料群を利用目的別の知識へ変換するCLIです。通常のRAGが文書を検索して回答するのに対し、Fragrachはその入力を準備します。検索API、ベクトルデータベース、チャット画面は提供しません。
 
 原文をEvidenceへ分割し、ローカルLLMでEvidence付きClaim候補を抽出します。その後、Rust側で参照先、適用期間、文書の権威性、状態、矛盾、不足を検証し、Knowledge Buildとして確定します。判断できない矛盾は勝手に解消せず、Warningと根拠を残します。
 
@@ -15,7 +15,7 @@ FRAGARACHは、RAGへ文書を登録する前に、資料群を利用目的別�
 
 入力できる文書はUTF-8のMarkdown、`.markdown`、プレーンテキストです。PDF、Office文書、画像、OCRには対応していません。
 
-Claim抽出にはOllamaを使います。文書は設定したOllama endpointへ送られるため、標準設定のローカルOllamaを使う場合は端末外へ送信されません。外部ホストのendpointを指定した場合は、そのホストへEvidence本文が送られます。FRAGARACH自体はOllama以外のLLM APIへ接続しません。
+Claim抽出にはOllamaを使います。文書は設定したOllama endpointへ送られるため、標準設定のローカルOllamaを使う場合は端末外へ送信されません。外部ホストのendpointを指定した場合は、そのホストへEvidence本文が送られます。Fragrach自体はOllama以外のLLM APIへ接続しません。
 
 npm用パッケージとWindows x64、Linux x64/arm64、macOS x64/arm64の構成は用意されていますが、0.1.0はnpmレジストリへ未公開です。現時点ではソースからビルドするか、ローカルで作成したtarballを使います。ライセンスも`UNLICENSED`であり、組織導入用の公開リリースではありません。
 
@@ -43,13 +43,13 @@ Ollamaが別の端末ですでに動いている場合、`ollama serve`を重ね
 
 ### 2. ワークスペースを初期化する
 
-以下では、原文を`C:\knowledge\corpus\sources`、FRAGARACHの管理領域を`C:\knowledge\work`に置きます。
+以下では、原文を`C:\knowledge\corpus\sources`、Fragrachの管理領域を`C:\knowledge\work`に置きます。
 
 ```powershell
 fragarach init C:\knowledge\work
 ```
 
-成功すると`C:\knowledge\work\.fragarach`が作られます。FRAGARACHはSource Root内の原文を変更しませんが、`.fragarach`内のManifest、SQLiteデータベース、解析結果は更新します。
+成功すると`C:\knowledge\work\.fragarach`が作られます。FragrachはSource Root内の原文を変更しませんが、`.fragarach`内のManifest、SQLiteデータベース、解析結果は更新します。
 
 ### 3. 文書を走査する
 
@@ -99,7 +99,7 @@ Intentが広すぎるとClaim数、LLM利用量、検索時のノイズが増え
 
 ### 5. 文書の権威性と期間を付ける
 
-Source Rootの親に`corpus.yaml`を置くと、FRAGARACHがコンパイル時と再コンパイル時に読みます。
+Source Rootの親に`corpus.yaml`を置くと、Fragrachがコンパイル時と再コンパイル時に読みます。
 
 ```yaml
 authority_precedence:
@@ -205,7 +205,7 @@ JSONLはEvidenceを中心に関連Claimをまとめます。各行には、原�
 3. `retrieval-profile.yaml`の権威順位を検索スコアと回答判断へ反映する。
 4. `answer-contract.yaml`に従って引用と未解決Conflictを回答へ出す。
 
-FRAGARACHはベクトル化や登録処理を行わないため、JSONLを利用中の検索基盤へ渡すアダプターは利用者が実装します。
+Fragrachはベクトル化や登録処理を行わないため、JSONLを利用中の検索基盤へ渡すアダプターは利用者が実装します。
 
 ## Knowledge Buildの読み方
 
