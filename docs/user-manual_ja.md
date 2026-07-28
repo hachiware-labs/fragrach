@@ -7,6 +7,34 @@
 
 Fragrachは、RAGへ文書を登録する前に、資料群を利用目的別の知識へ変換するCLIです。通常のRAGが文書を検索して回答するのに対し、Fragrachはその入力を準備します。検索API、ベクトルデータベース、チャット画面は提供しません。
 
+```mermaid
+flowchart LR
+    subgraph input_group["入力"]
+        source["Source Corpus<br/>Markdown・TXTの資料群"]
+        intent["Usage Intent<br/>目的・利用者・質問"]
+        rules["文書管理規則（任意）<br/>権威順位・適用期間・状態"]
+    end
+
+    compiler["Fragrach<br/>知識を目的別にコンパイル"]
+
+    subgraph output_group["出力"]
+        build["Knowledge Build<br/>Evidence・Claim・Conflict・Diagnostic<br/>検索・回答契約"]
+        jsonl["RAG投入用JSONL"]
+    end
+
+    downstream["利用者のRAG・Agent"]
+
+    source --> compiler
+    intent --> compiler
+    rules --> compiler
+    compiler --> build
+    build --> jsonl
+    jsonl --> downstream
+    build -. "検索・回答条件" .-> downstream
+```
+
+図の右端にあるRAGやAgentは利用者が用意します。Fragrachの役割は、その手前で原文と利用目的を照合し、根拠、矛盾、情報不足を失わない知識成果物を作ることです。
+
 原文をEvidenceへ分割し、ローカルLLMでEvidence付きClaim候補を抽出します。その後、Rust側で参照先、適用期間、文書の権威性、状態、矛盾、不足を検証し、Knowledge Buildとして確定します。判断できない矛盾は勝手に解消せず、Warningと根拠を残します。
 
 主な利用者は、社内RAGを構築する開発者です。文書管理者は文書の権威順位と施行日を整え、業務担当者はUsage Intentと未解決事項を確認します。RAG開発者は確定したJSONLと検索・回答契約を下流システムへ組み込みます。
