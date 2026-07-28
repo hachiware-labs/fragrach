@@ -1,0 +1,19 @@
+id: design-review
+goal: 製品変更に必要なレビュー、承認者、例外手続を根拠付きで判断する
+users:
+  - product-developer
+  - technical-reviewer
+  - quality-assurance-member
+tasks:
+  - 変更内容からレビュー要否とリスク区分を判断する
+  - 必要な承認者を特定する
+  - 緊急時の例外手続と事後対応を確認する
+questions:
+  - 外部仕様に影響する変更にはレビューが必要か
+  - 高リスク変更は誰が承認するか
+  - 設定変更はレビューを省略できるか
+  - 緊急変更の事後レビューはいつまでに必要か
+requirements:
+  evidence_required: true
+  temporal_scope_required: true
+  unresolved_conflicts_allowed: true

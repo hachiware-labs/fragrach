@@ -11,6 +11,7 @@ import {
   buildRawChunks,
   documentMatchesAsOf,
   expandedEvidence,
+  filterQuestionsByIntent,
   retrievalRecall,
   retrieve,
 } from "./run-upper-bound.mjs";
@@ -44,6 +45,7 @@ function parseArguments(argv) {
     outputPath: defaultOutputPath,
     compiledBuilds: [],
     topKValues: [5, 10, 20],
+    intents: [],
   };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -57,6 +59,8 @@ function parseArguments(argv) {
       options.topKValues = argv[++index]
         .split(",")
         .map((value) => Number.parseInt(value, 10));
+    } else if (argument === "--intent") {
+      options.intents.push(argv[++index]);
     } else if (argument === "--help" || argument === "-h") {
       options.help = true;
     } else {
@@ -75,6 +79,7 @@ Options:
   --output <path>         JSON report path
   --compiled-build <path> Add an actual Fragrach Knowledge Build (repeatable)
   --top-k <values>        Comma-separated retrieval depths (default: 5,10,20)
+  --intent <id>           Evaluate only this Intent (repeatable)
   --help                  Show this help`);
 }
 
@@ -200,9 +205,15 @@ function main() {
     throw new Error("--top-k values must be positive integers");
   }
 
-  const questions = readJsonl(
-    path.join(options.corpusRoot, "evaluation/questions.jsonl"),
+  const questions = filterQuestionsByIntent(
+    readJsonl(
+      path.join(options.corpusRoot, "evaluation/questions.jsonl"),
+    ),
+    options.intents,
   );
+  if (questions.length === 0) {
+    throw new Error("--intent did not match any evaluation questions");
+  }
   const expected = readJson(
     path.join(options.corpusRoot, "ground-truth/expected.json"),
   );
@@ -314,6 +325,7 @@ function main() {
     experiment: "retrieval-ablation",
     generated_at: new Date().toISOString(),
     questions: questions.length,
+    intent_filter: options.intents,
     top_k_values: options.topKValues,
     variants: results,
     deltas_from_actual_baseline: Object.fromEntries(

@@ -1,0 +1,19 @@
+id: incident-response
+goal: 顧客影響を伴う障害の初動、指揮、連絡、復旧条件を根拠付きで案内する
+users:
+  - on-call-engineer
+  - support-agent
+  - incident-commander
+tasks:
+  - 障害レベルを判定する
+  - 最初の安全な行動と連絡期限を示す
+  - 指揮担当と顧客連絡の責任部署を特定する
+questions:
+  - 顧客データ漏えいの疑いがある場合はいつ誰に連絡するか
+  - P1障害の初動指揮を誰が執るか
+  - ログで事実を確認するまで報告を待ってよいか
+  - 顧客への障害通知を誰が承認し誰が送るか
+requirements:
+  evidence_required: true
+  temporal_scope_required: true
+  unresolved_conflicts_allowed: true

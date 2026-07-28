@@ -10,6 +10,7 @@ import {
   buildActualChunks,
   buildOracleChunks,
   documentMatchesAsOf,
+  filterQuestionsByIntent,
   tokenize,
 } from "./run-upper-bound.mjs";
 
@@ -23,6 +24,19 @@ test("Actualアブレーション名を検索単位オプションへ変換す�
     () => actualVariantOptions("unknown"),
     /unknown --actual-variant/,
   );
+});
+
+test("指定したIntentの質問だけを評価対象にする", () => {
+  const questions = [
+    { id: "q1", intent_id: "design-review" },
+    { id: "q2", intent_id: "incident-response" },
+    { id: "q3", intent_id: "customer-support" },
+  ];
+  assert.deepEqual(
+    filterQuestionsByIntent(questions, ["design-review", "incident-response"]),
+    questions.slice(0, 2),
+  );
+  assert.equal(filterQuestionsByIntent(questions, []), questions);
 });
 
 test("日本語文字n-gramで分かち書きのない質問を検索できる", () => {

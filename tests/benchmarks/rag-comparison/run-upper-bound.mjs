@@ -1187,6 +1187,7 @@ function parseArguments(argv) {
     compiledBuilds: [],
     actualOnly: false,
     actualVariant: "baseline",
+    intents: [],
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -1209,6 +1210,8 @@ function parseArguments(argv) {
       options.actualOnly = true;
     } else if (argument === "--actual-variant") {
       options.actualVariant = argv[++index];
+    } else if (argument === "--intent") {
+      options.intents.push(argv[++index]);
     } else if (argument === "--help" || argument === "-h") {
       options.help = true;
     } else {
@@ -1235,7 +1238,14 @@ Options:
   --actual-variant <name>
                      Actual adapter: baseline, aliases, evidence-fallback,
                      fallback-no-authority, or fallback-evidence-only
+  --intent <id>      Evaluate only this Intent (repeatable)
   --help             Show this help`);
+}
+
+export function filterQuestionsByIntent(questions, intents) {
+  if (intents.length === 0) return questions;
+  const selected = new Set(intents);
+  return questions.filter((question) => selected.has(question.intent_id));
 }
 
 export function actualVariantOptions(name) {
@@ -1276,9 +1286,15 @@ async function main() {
   }
 
   fs.mkdirSync(options.outputDirectory, { recursive: true });
-  const questions = readJsonl(
-    path.join(options.corpusRoot, "evaluation/questions.jsonl"),
+  const questions = filterQuestionsByIntent(
+    readJsonl(
+      path.join(options.corpusRoot, "evaluation/questions.jsonl"),
+    ),
+    options.intents,
   );
+  if (questions.length === 0) {
+    throw new Error("--intent did not match any evaluation questions");
+  }
   const expected = readJson(
     path.join(options.corpusRoot, "ground-truth/expected.json"),
   );
@@ -1346,6 +1362,7 @@ async function main() {
     top_k: options.topK,
     seed: options.seed,
     actual_variant: options.actualVariant,
+    intent_filter: options.intents,
     generated_at: new Date().toISOString(),
     indexes: {
       raw_chunks: rawChunks.length,

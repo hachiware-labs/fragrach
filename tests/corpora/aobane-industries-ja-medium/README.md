@@ -63,3 +63,11 @@
 最初は`design-review.yaml`を使い、設計変更にレビューが必要か、誰が承認するか、例外が認められるかをコンパイルします。次に`incident-response.yaml`を追加し、Parsed Documentを再生成せずに障害対応用のKnowledge Buildを作れるか確認します。`data-export-operation.yaml`では、提案から実装までの状態遷移と、実装後も残ったFAQの矛盾を扱います。
 
 増分試験では、`scenarios/incremental/README.md`の手順に従い、文書の追加、現行規程の改訂、根拠文書の削除を順に適用します。
+
+## 未解決矛盾の公開方針
+
+通常の`design-review.yaml`と`incident-response.yaml`は、未解決矛盾が1件でも残ればKnowledge Buildの公開を停止する厳格版です。`design-review-warn.yaml`と`incident-response-warn.yaml`は同じIntent IDと質問を持ちますが、未解決矛盾をWarningと未解決質問として残したまま公開できます。
+
+Mediumの実測では、厳格版の設計レビューは事後レビュー期限の未解決矛盾2件を検出して公開を停止しました。Warning版では矛盾を成果物へ残し、Raw RAGとの評価に使用できました。運用要件に合わせ、決定不能な知識を下流へ渡してよい場合だけWarning版を使ってください。
+
+検索と回答品質の実測値、失敗例、再実行方法は[Mediumコーパス評価結果](../../benchmarks/rag-comparison/MEDIUM_FINDINGS_ja.md)にまとめています。
