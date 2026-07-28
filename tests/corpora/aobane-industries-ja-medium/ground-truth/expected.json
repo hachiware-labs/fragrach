@@ -1,0 +1,613 @@
+{
+  "schema_version": "0.1",
+  "corpus_id": "aobane-industries-ja",
+  "baseline_as_of": "2026-06-30",
+  "inventory": {
+    "source_document_count": 25,
+    "formats": {
+      "markdown": 24,
+      "text": 1
+    },
+    "departments": [
+      "経営管理部",
+      "品質保証部",
+      "製品開発部",
+      "情報システム部",
+      "カスタマーサポート部"
+    ]
+  },
+  "exact_duplicate_groups": [
+    {
+      "members": [
+        "sources/20-quality-assurance/checklists/release-readiness-checklist.md",
+        "sources/20-quality-assurance/checklists/copies/release-checklist-shared-copy.md"
+      ],
+      "expected_relation": "exact_duplicate"
+    }
+  ],
+  "version_groups": [
+    {
+      "series_id": "REG-DOC",
+      "current": "REG-DOC-002",
+      "superseded": [
+        "REG-DOC-001"
+      ]
+    },
+    {
+      "series_id": "QA-STD-DR",
+      "current": "QA-STD-DR-002",
+      "superseded": [
+        "QA-STD-DR-0015",
+        "QA-STD-DR-001"
+      ]
+    },
+    {
+      "series_id": "IS-STD-INC",
+      "current": "IS-STD-INC-002",
+      "superseded": [
+        "IS-STD-INC-001"
+      ]
+    }
+  ],
+  "alias_clusters": [
+    {
+      "canonical": "製品責任者",
+      "aliases": [
+        "PO",
+        "サービスオーナー"
+      ],
+      "evidence": {
+        "source": "sources/00-company/glossary.md",
+        "section": "役割"
+      }
+    },
+    {
+      "canonical": "主任技師",
+      "aliases": [
+        "技術責任者"
+      ],
+      "evidence": {
+        "source": "sources/00-company/glossary.md",
+        "section": "役割"
+      }
+    },
+    {
+      "canonical": "情報管理責任者",
+      "aliases": [
+        "セキュリティ責任者"
+      ],
+      "evidence": {
+        "source": "sources/00-company/glossary.md",
+        "section": "役割"
+      }
+    }
+  ],
+  "expected_claims": [
+    {
+      "id": "claim-authority-order",
+      "subject": "社内文書",
+      "predicate": "is_applied_in_order",
+      "object": [
+        "全社規程",
+        "全社標準",
+        "部門手順",
+        "ガイド・FAQ・チェックリスト",
+        "議事録・メモ"
+      ],
+      "status": "approved",
+      "evidence": {
+        "source": "sources/00-company/document-authority-policy.md",
+        "section": "文書区分"
+      }
+    },
+    {
+      "id": "claim-external-change-review",
+      "subject": "外部仕様に影響する変更",
+      "predicate": "requires",
+      "object": "実装開始前の設計レビュー",
+      "status": "approved",
+      "valid_from": "2026-04-01",
+      "evidence": {
+        "source": "sources/20-quality-assurance/standards/design-review-standard-v2.md",
+        "section": "レビューが必要な変更"
+      }
+    },
+    {
+      "id": "claim-config-change-review",
+      "subject": "設定ファイルだけの変更",
+      "predicate": "requires_review_when",
+      "object": "外部仕様・セキュリティ・可用性・法令・契約等へ影響する",
+      "status": "approved",
+      "valid_from": "2026-04-01",
+      "evidence": {
+        "source": "sources/20-quality-assurance/standards/design-review-standard-v2.md",
+        "section": "レビューが必要な変更"
+      }
+    },
+    {
+      "id": "claim-high-risk-approvers",
+      "subject": "高リスク変更",
+      "predicate": "requires_approval_by",
+      "object": [
+        "製品責任者",
+        "主任技師",
+        "品質保証部長"
+      ],
+      "condition": "情報セキュリティへ影響する場合は情報管理責任者も必要",
+      "status": "approved",
+      "valid_from": "2026-04-01",
+      "evidence": {
+        "source": "sources/20-quality-assurance/standards/design-review-standard-v2.md",
+        "section": "高リスク"
+      }
+    },
+    {
+      "id": "claim-low-risk-separation",
+      "subject": "低リスク変更",
+      "predicate": "must_not_be_approved_solo_by",
+      "object": "実装担当者",
+      "status": "approved",
+      "valid_from": "2026-04-01",
+      "evidence": {
+        "source": "sources/20-quality-assurance/standards/design-review-standard-v2.md",
+        "section": "低リスク"
+      }
+    },
+    {
+      "id": "claim-emergency-review-deadline",
+      "subject": "緊急変更",
+      "predicate": "requires_post_review_within",
+      "object": "変更翌営業日から数えて二営業日以内",
+      "status": "approved",
+      "valid_from": "2026-04-01",
+      "evidence": {
+        "source": "sources/20-quality-assurance/standards/design-review-standard-v2.md",
+        "section": "緊急変更"
+      }
+    },
+    {
+      "id": "claim-production-access-approvers",
+      "subject": "本番環境アクセス",
+      "predicate": "requires_approval_by",
+      "object": [
+        "システム管理者",
+        "製品責任者"
+      ],
+      "status": "approved",
+      "valid_from": "2026-01-01",
+      "evidence": {
+        "source": "sources/40-information-systems/policies/production-access-standard.md",
+        "section": "通常申請"
+      }
+    },
+    {
+      "id": "claim-production-access-duration",
+      "subject": "通常の本番環境アクセス",
+      "predicate": "has_maximum_duration",
+      "object": "8時間",
+      "status": "approved",
+      "valid_from": "2026-01-01",
+      "evidence": {
+        "source": "sources/40-information-systems/policies/production-access-standard.md",
+        "section": "通常申請"
+      }
+    },
+    {
+      "id": "claim-emergency-access-duration",
+      "subject": "P1障害時の緊急アクセス",
+      "predicate": "has_maximum_duration",
+      "object": "2時間",
+      "condition": "システム管理者が緊急付与し翌営業日までに製品責任者の事後承認を得る",
+      "status": "approved",
+      "valid_from": "2026-01-01",
+      "evidence": {
+        "source": "sources/40-information-systems/policies/production-access-standard.md",
+        "section": "緊急付与"
+      }
+    },
+    {
+      "id": "claim-p1-suspicion",
+      "subject": "顧客データ漏えいの合理的な疑い",
+      "predicate": "is_classified_as",
+      "object": "P1障害",
+      "status": "approved",
+      "valid_from": "2026-04-01",
+      "evidence": [
+        {
+          "source": "sources/40-information-systems/policies/incident-response-standard-v2.md",
+          "section": "障害レベル"
+        },
+        {
+          "source": "sources/50-customer-support/procedures/customer-escalation-procedure.md",
+          "section": "P1の疑いがある場合"
+        }
+      ]
+    },
+    {
+      "id": "claim-p1-notification",
+      "subject": "P1障害の発見者",
+      "predicate": "must_notify_within",
+      "object": "15分",
+      "recipients": [
+        "運用マネージャー",
+        "製品責任者",
+        "情報管理責任者",
+        "カスタマーサポート部の当番"
+      ],
+      "status": "approved",
+      "valid_from": "2026-04-01",
+      "evidence": [
+        {
+          "source": "sources/40-information-systems/policies/incident-response-standard-v2.md",
+          "section": "指揮と連絡"
+        },
+        {
+          "source": "sources/50-customer-support/procedures/customer-escalation-procedure.md",
+          "section": "P1の疑いがある場合"
+        }
+      ]
+    },
+    {
+      "id": "claim-p1-commander",
+      "subject": "P1障害の初動",
+      "predicate": "is_commanded_by",
+      "object": "運用マネージャー",
+      "status": "approved",
+      "valid_from": "2026-04-01",
+      "evidence": {
+        "source": "sources/40-information-systems/policies/incident-response-standard-v2.md",
+        "section": "指揮と連絡"
+      }
+    },
+    {
+      "id": "claim-customer-notice",
+      "subject": "顧客向け障害通知",
+      "predicate": "is_approved_and_sent_by",
+      "object": {
+        "approver": "経営管理部長",
+        "sender": "カスタマーサポート部"
+      },
+      "status": "approved",
+      "evidence": [
+        {
+          "source": "sources/00-company/organization-directory.md",
+          "section": "カスタマーサポート部"
+        },
+        {
+          "source": "sources/40-information-systems/policies/incident-response-standard-v2.md",
+          "section": "顧客連絡"
+        },
+        {
+          "source": "sources/50-customer-support/procedures/customer-escalation-procedure.md",
+          "section": "顧客への説明"
+        }
+      ]
+    },
+    {
+      "id": "claim-export-retention",
+      "subject": "エクスポートファイル",
+      "predicate": "has_retention_period",
+      "object": "30日間",
+      "condition": "契約終了または顧客から削除要求を受けた場合は30日を待たずに削除する",
+      "status": "implemented",
+      "valid_from": "2026-06-01",
+      "evidence": [
+        {
+          "source": "sources/20-quality-assurance/reviews/export-retention-review-2026-04-15.md",
+          "section": "判断"
+        },
+        {
+          "source": "sources/30-product-development/changes/export-retention/03-retention-implementation.md",
+          "section": "実施内容"
+        }
+      ]
+    }
+  ],
+  "expected_conflicts": [
+    {
+      "id": "conflict-config-review",
+      "type": "authority_conflict",
+      "topic": "設定ファイルだけの変更のレビュー要否",
+      "sources": [
+        "sources/20-quality-assurance/standards/design-review-standard-v2.md",
+        "sources/30-product-development/guides/development-workflow.md"
+      ],
+      "resolution": "現行の全社標準を優先し、影響があればレビュー必須とする",
+      "open_question": "開発ワークフローを現行標準へ合わせて改訂する必要がある"
+    },
+    {
+      "id": "conflict-low-risk-self-approval",
+      "type": "temporal_difference",
+      "topic": "低リスク変更の自己承認",
+      "sources": [
+        "sources/20-quality-assurance/standards/design-review-standard-v2.md",
+        "sources/20-quality-assurance/archive/design-review-standard-v1.5.md",
+        "sources/20-quality-assurance/archive/design-review-standard-v1.md"
+      ],
+      "resolution": "2026年3月31日まではチームリーダーが実装担当者を兼ねる場合に自己承認可能。2026年4月1日以降は実装担当者による単独承認不可"
+    },
+    {
+      "id": "conflict-post-review-deadline",
+      "type": "temporal_difference",
+      "topic": "緊急変更の事後レビュー期限",
+      "sources": [
+        "sources/20-quality-assurance/standards/design-review-standard-v2.md",
+        "sources/20-quality-assurance/archive/design-review-standard-v1.5.md",
+        "sources/20-quality-assurance/archive/design-review-standard-v1.md"
+      ],
+      "resolution": "2025年6月30日までは五営業日以内、2025年7月1日から2026年3月31日までは三営業日以内、2026年4月1日以降は二営業日以内"
+    },
+    {
+      "id": "conflict-production-access-duration",
+      "type": "authority_conflict",
+      "topic": "通常の本番アクセス可能時間",
+      "sources": [
+        "sources/40-information-systems/policies/production-access-standard.md",
+        "sources/40-information-systems/faq/production-access-faq.md",
+        "sources/30-product-development/guides/new-member-onboarding.md"
+      ],
+      "resolution": "現行標準の最大8時間を優先する",
+      "open_question": "FAQと新任者向け案内を改訂する必要がある"
+    },
+    {
+      "id": "conflict-production-access-approval",
+      "type": "authority_conflict",
+      "topic": "本番アクセスの承認者",
+      "sources": [
+        "sources/40-information-systems/policies/production-access-standard.md",
+        "sources/40-information-systems/faq/production-access-faq.md",
+        "sources/30-product-development/guides/new-member-onboarding.md"
+      ],
+      "resolution": "システム管理者と製品責任者の承認を必要とする",
+      "open_question": "チームリーダーだけで申請できると読める案内を改訂する必要がある"
+    },
+    {
+      "id": "conflict-p1-confirmation",
+      "type": "authority_conflict",
+      "topic": "顧客データ漏えいの事実確認前の報告",
+      "sources": [
+        "sources/40-information-systems/policies/incident-response-standard-v2.md",
+        "sources/50-customer-support/procedures/customer-escalation-procedure.md",
+        "sources/50-customer-support/faq/incident-first-response-faq.md"
+      ],
+      "resolution": "合理的な疑いの段階でP1として開始し、事実確定を待たず報告する",
+      "severity": "critical",
+      "open_question": "旧FAQを直ちに訂正または撤回する必要がある"
+    },
+    {
+      "id": "conflict-p1-notification-time",
+      "type": "authority_conflict",
+      "topic": "P1連絡期限",
+      "sources": [
+        "sources/40-information-systems/policies/incident-response-standard-v2.md",
+        "sources/50-customer-support/procedures/customer-escalation-procedure.md",
+        "sources/50-customer-support/faq/incident-first-response-faq.md"
+      ],
+      "resolution": "現行標準と現行部門手順に従い15分以内とする",
+      "severity": "high"
+    },
+    {
+      "id": "conflict-incident-commander",
+      "type": "temporal_difference",
+      "topic": "P1初動のインシデントコマンダー",
+      "sources": [
+        "sources/40-information-systems/policies/incident-response-standard-v2.md",
+        "sources/40-information-systems/archive/incident-response-standard-v1.md"
+      ],
+      "resolution": "2026年4月1日以降は運用マネージャー。旧版のカスタマーサポート部長は過去期間にのみ適用する"
+    },
+    {
+      "id": "conflict-customer-notice-approval",
+      "type": "authority_conflict",
+      "topic": "顧客向け障害通知の承認者",
+      "sources": [
+        "sources/40-information-systems/policies/incident-response-standard-v2.md",
+        "sources/50-customer-support/procedures/customer-escalation-procedure.md",
+        "sources/50-customer-support/faq/incident-first-response-faq.md"
+      ],
+      "resolution": "経営管理部長が承認し、カスタマーサポート部が送信する",
+      "open_question": "旧FAQの承認者記載を改訂する必要がある"
+    },
+    {
+      "id": "conflict-emergency-review-cheatsheet",
+      "type": "authority_conflict",
+      "topic": "現行の緊急変更の事後レビュー期限",
+      "sources": [
+        "sources/20-quality-assurance/standards/design-review-standard-v2.md",
+        "sources/30-product-development/guides/emergency-change-cheatsheet.md"
+      ],
+      "evidence": [
+        {
+          "source": "sources/20-quality-assurance/standards/design-review-standard-v2.md",
+          "section": "緊急変更"
+        },
+        {
+          "source": "sources/30-product-development/guides/emergency-change-cheatsheet.md",
+          "section": "変更後"
+        }
+      ],
+      "resolution": "現行の設計レビュー標準を優先し、変更翌営業日から数えて二営業日以内とする",
+      "open_question": "チートシートの五営業日という記載を現行標準へ合わせて改訂する必要がある"
+    },
+    {
+      "id": "conflict-export-retention-faq",
+      "type": "authority_conflict",
+      "topic": "エクスポートファイルの現行保持期間",
+      "sources": [
+        "sources/20-quality-assurance/reviews/export-retention-review-2026-04-15.md",
+        "sources/30-product-development/changes/export-retention/03-retention-implementation.md",
+        "sources/50-customer-support/faq/export-data-faq.md"
+      ],
+      "evidence": [
+        {
+          "source": "sources/20-quality-assurance/reviews/export-retention-review-2026-04-15.md",
+          "section": "判断"
+        },
+        {
+          "source": "sources/30-product-development/changes/export-retention/03-retention-implementation.md",
+          "section": "実施内容"
+        },
+        {
+          "source": "sources/50-customer-support/faq/export-data-faq.md",
+          "section": "生成したファイルはいつまで再取得できますか"
+        }
+      ],
+      "resolution": "承認済みレビューと実装記録に従い30日間とし、FAQの90日間という記載は現行案内に使わない",
+      "open_question": "顧客向けFAQを実装済みの30日間へ改訂する必要がある"
+    }
+  ],
+  "event_sequences": [
+    {
+      "id": "sequence-emergency-review-deadline",
+      "topic": "緊急変更の事後レビュー期限",
+      "events": [
+        {
+          "date": "2024-04-01",
+          "state": "effective",
+          "value": "五営業日以内",
+          "source": "sources/20-quality-assurance/archive/design-review-standard-v1.md",
+          "section": "緊急対応"
+        },
+        {
+          "date": "2025-07-01",
+          "state": "effective",
+          "value": "三営業日以内",
+          "source": "sources/20-quality-assurance/archive/design-review-standard-v1.5.md",
+          "section": "緊急対応"
+        },
+        {
+          "date": "2026-04-01",
+          "state": "effective",
+          "value": "変更翌営業日から数えて二営業日以内",
+          "source": "sources/20-quality-assurance/standards/design-review-standard-v2.md",
+          "section": "緊急変更"
+        }
+      ]
+    },
+    {
+      "id": "sequence-export-retention",
+      "topic": "エクスポートファイル保持期間の変更",
+      "events": [
+        {
+          "date": "2026-04-08",
+          "state": "proposed",
+          "value": "90日間",
+          "source": "sources/30-product-development/changes/export-retention/01-retention-proposal.md",
+          "section": "提案内容"
+        },
+        {
+          "date": "2026-04-15",
+          "state": "approved_with_change",
+          "value": "30日間",
+          "source": "sources/20-quality-assurance/reviews/export-retention-review-2026-04-15.md",
+          "section": "判断"
+        },
+        {
+          "date": "2026-06-01",
+          "state": "implemented",
+          "value": "30日間",
+          "source": "sources/30-product-development/changes/export-retention/03-retention-implementation.md",
+          "section": "実施内容"
+        }
+      ]
+    }
+  ],
+  "expected_missing_information": [
+    {
+      "id": "missing-rollback-owner",
+      "type": "missing_owner",
+      "subject": "ロールバック手順と復旧目標時間の確認",
+      "source": "sources/20-quality-assurance/checklists/release-readiness-checklist.md",
+      "section": "リリースと復旧",
+      "severity": "medium"
+    }
+  ],
+  "not_conflicts": [
+    {
+      "topic": "高リスク変更の主任技師承認を製品開発部長で代替する案",
+      "source": "sources/10-corporate-management/notes/management-meeting-2026-06-15.txt",
+      "reason": "継続検討であり、現行標準を変更しないと明記されている"
+    },
+    {
+      "topic": "認証キャッシュの有効時間変更",
+      "source": "sources/30-product-development/notes/architecture-forum-2026-05-28.md",
+      "reason": "現行標準を具体例へ適用した記録であり、標準との競合ではない"
+    },
+    {
+      "topic": "エクスポートファイルを90日間保持する当初案",
+      "source": "sources/30-product-development/changes/export-retention/01-retention-proposal.md",
+      "reason": "提案段階の草案であり、レビューで承認されず実装もされていない"
+    }
+  ],
+  "intent_coverage": {
+    "design-review": {
+      "expected_answerable_questions": 8,
+      "expected_unresolved_conflicts": [
+        "conflict-config-review"
+      ]
+    },
+    "incident-response": {
+      "expected_answerable_questions": 3,
+      "expected_unresolved_conflicts": [
+        "conflict-p1-confirmation",
+        "conflict-p1-notification-time",
+        "conflict-customer-notice-approval"
+      ]
+    },
+    "developer-onboarding": {
+      "expected_answerable_questions": 3,
+      "expected_unresolved_conflicts": [
+        "conflict-production-access-duration",
+        "conflict-production-access-approval"
+      ]
+    },
+    "data-export-operation": {
+      "expected_answerable_questions": 2,
+      "expected_unresolved_conflicts": [
+        "conflict-export-retention-faq"
+      ]
+    }
+  },
+  "incremental_scenarios": [
+    {
+      "id": "add-security-guidance",
+      "operation": "add",
+      "source": "scenarios/incremental/add-source/new-security-guidance.md",
+      "expected": {
+        "added_sources": 1,
+        "reparse_existing_sources": 0,
+        "affected_intents": [
+          "design-review",
+          "developer-onboarding"
+        ]
+      }
+    },
+    {
+      "id": "replace-design-review-standard",
+      "operation": "replace",
+      "source": "scenarios/incremental/replace-source/design-review-standard-v2.1.md",
+      "target": "sources/20-quality-assurance/standards/design-review-standard-v2.md",
+      "expected": {
+        "changed_sources": 1,
+        "affected_intents": [
+          "design-review",
+          "developer-onboarding"
+        ],
+        "unaffected_intents": [
+          "incident-response"
+        ]
+      }
+    },
+    {
+      "id": "delete-architecture-forum",
+      "operation": "delete",
+      "target": "sources/30-product-development/notes/architecture-forum-2026-05-28.md",
+      "expected": {
+        "deleted_sources": 1,
+        "unsupported_topics": [
+          "認証キャッシュの有効時間を5分から15分へ変更する個別事例"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,69 @@
+id: aobane-industries-ja-medium
+title: 青羽精機 社内文書コーパス Medium
+language: ja
+sources:
+  - path: ./sources
+    recursive: true
+include:
+  - "**/*.md"
+  - "**/*.txt"
+exclude:
+  - "**/~$*"
+  - "**/.git/**"
+authority_precedence:
+  - corporate_policy
+  - corporate_standard
+  - department_standard
+  - approved_review_record
+  - implementation_record
+  - incident_record
+  - corporate_reference
+  - change_record
+  - guidance
+  - record
+  - proposal
+authority_hints:
+  - pattern: "sources/00-company/document-authority-policy.md"
+    authority: corporate_policy
+  - pattern: "sources/00-company/organization-directory.md"
+    authority: corporate_reference
+  - pattern: "sources/00-company/organization-directory-*.md"
+    authority: corporate_reference
+  - pattern: "sources/00-company/glossary.md"
+    authority: corporate_reference
+  - pattern: "sources/00-company/glossary-*.md"
+    authority: corporate_reference
+  - pattern: "sources/00-company/policies/*.md"
+    authority: corporate_standard
+  - pattern: "sources/10-corporate-management/policies/*.md"
+    authority: corporate_policy
+  - pattern: "sources/20-quality-assurance/standards/*.md"
+    authority: corporate_standard
+  - pattern: "sources/**/archive/*standard*.md"
+    authority: corporate_standard
+  - pattern: "sources/20-quality-assurance/reviews/*.md"
+    authority: approved_review_record
+  - pattern: "sources/40-information-systems/policies/*.md"
+    authority: corporate_standard
+  - pattern: "sources/30-product-development/changes/**/*.md"
+    authority: change_record
+  - pattern: "sources/30-product-development/specifications/*.md"
+    authority: department_standard
+  - pattern: "sources/30-product-development/proposals/*.md"
+    authority: proposal
+  - pattern: "sources/40-information-systems/incidents/**/*.md"
+    authority: incident_record
+  - pattern: "sources/50-customer-support/bulletins/*.md"
+    authority: guidance
+  - pattern: "sources/**/archive/*"
+    lifecycle: superseded
+  - pattern: "sources/**/notes/*"
+    authority: record
+  - pattern: "sources/**/records/*"
+    authority: record
+  - pattern: "sources/**/faq/*"
+    authority: guidance
+  - pattern: "sources/**/procedures/*"
+    authority: guidance
+  - pattern: "sources/**/training/*"
+    authority: guidance

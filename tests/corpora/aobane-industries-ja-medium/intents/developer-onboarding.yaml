@@ -1,0 +1,17 @@
+id: developer-onboarding
+goal: 新任の製品開発者が開発着手から本番作業までに必要な役割、手続、参照先を理解する
+users:
+  - new-product-developer
+  - onboarding-mentor
+tasks:
+  - チーム内の主要な役割と別名を理解する
+  - 設計レビューとリリース確認の流れを理解する
+  - 本番アクセスの申請条件を確認する
+questions:
+  - POと製品責任者は同じ役割か
+  - 本番アクセスは誰の承認で何時間まで利用できるか
+  - リリース前に誰がどの確認を行うか
+requirements:
+  evidence_required: true
+  temporal_scope_required: true
+  unresolved_conflicts_allowed: true

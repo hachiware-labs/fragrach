@@ -43,3 +43,25 @@ fn scans_the_aobane_corpus_end_to_end() {
     assert_eq!(second.summary.parse_cache_hits, 46);
     assert_eq!(second.summary.parsed_now, 0);
 }
+
+#[test]
+fn scans_the_aobane_medium_corpus_end_to_end() {
+    let root = tempfile::tempdir().unwrap();
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/corpora/aobane-industries-ja-medium/sources");
+    let workspace = root.path().join("workspace");
+    init_workspace(&workspace).unwrap();
+
+    let first = scan(&source, &workspace).unwrap();
+    assert_eq!(first.summary.total_current, 100);
+    assert_eq!(first.summary.added, 100);
+    assert_eq!(first.summary.parsed_documents, 99);
+    assert_eq!(first.summary.duplicates, 1);
+    assert_eq!(first.summary.errors, 0);
+    assert_eq!(first.summary.unsupported, 0);
+
+    let second = scan(&source, &workspace).unwrap();
+    assert_eq!(second.summary.unchanged, 100);
+    assert_eq!(second.summary.parse_cache_hits, 99);
+    assert_eq!(second.summary.parsed_now, 0);
+}

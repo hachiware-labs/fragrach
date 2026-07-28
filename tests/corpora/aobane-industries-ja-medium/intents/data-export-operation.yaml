@@ -1,0 +1,19 @@
+id: data-export-operation
+goal: エクスポートデータの現行保持期間と削除条件を、変更経緯と競合を踏まえて案内する
+users:
+  - customer-support-member
+  - product-operator
+  - information-security-member
+tasks:
+  - 対象日時点で有効な保持期間を特定する
+  - 提案、承認、実装の各状態を区別する
+  - FAQと正式な変更記録の不一致を検出する
+questions:
+  - エクスポートファイルは何日間保持されるか
+  - 当初の90日案は採用されたか
+  - 契約終了または削除要求を受けた場合はどうするか
+  - FAQと実装記録が矛盾する場合は何を案内するか
+requirements:
+  evidence_required: true
+  temporal_scope_required: true
+  unresolved_conflicts_allowed: false
