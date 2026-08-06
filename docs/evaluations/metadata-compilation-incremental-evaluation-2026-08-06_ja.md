@@ -4,7 +4,7 @@
 
 現行のFragrachが、企業文書のDocument ProfileとRelationをどこまで原文からコンパイルできるかを確認した。今回の結果は検索・回答品質やVanilla RAGとの比較ではなく、Knowledge Buildを作る段階だけの評価である。
 
-評価前の方式はコミット`61ac59b`として固定した。その後、承認関係を表現できない問題と、古いFAQの矛盾関係が安定しない問題を修正し、同じ12文書を再評価した。続いて、データを一度に広げず、同じ部門のplanningとoperationsを12文書ずつ追加した。さらに、業界と部門を跨いだ再現性を見るため、医療・品質薬事部のgovernanceとoperationsを24文書追加した。
+評価前の方式はコミット`61ac59b`として固定した。その後、承認関係を表現できない問題と、古いFAQの矛盾関係が安定しない問題を修正し、同じ12文書を再評価した。続いて、データを一度に広げず、同じ部門のplanningとoperationsを12文書ずつ追加した。さらに、業界と部門を跨いだ再現性を見るため、医療・品質薬事部のgovernanceとoperationsを24文書追加した。Relation coverage passの実装後は、金融・コンプライアンス部、ソフトウェア・セキュリティ部、エネルギー・系統運用部のoperationsを12文書ずつfresh実行した。
 
 ## 対象と条件
 
@@ -17,9 +17,12 @@
 | 製品設計・operations | 12 | 9 | 2 | 2 |
 | 品質薬事・governance | 12 | 9 | 1 | 1 |
 | 品質薬事・operations | 12 | 9 | 4 | 4 |
-| 合計 | 60 | 45 | 10 | 10 |
+| 金融コンプライアンス・operations | 12 | 9 | 1 | 1 |
+| ソフトウェアセキュリティ・operations | 12 | 9 | 1 | 1 |
+| エネルギー系統運用・operations | 12 | 9 | 1 | 1 |
+| 合計 | 96 | 72 | 13 | 13 |
 
-したがって、現時点で確認した範囲は60文書、2業界・2部門、3用途に限られる。製品設計のgovernanceとplanningは抽出契約v4、製品設計のoperationsと品質薬事の2用途はv5で測定しており、単一契約版の全体性能を示す集計ではない。品質薬事operationsの4応答はすべて初回compileでProfile、Relation、Claimを保存したが、未解決Conflictを許可しないIntentの公開条件を満たさなかった。その後、Conflict解析とRelation coverage passを修正し、LLMを再実行しないrecompileで4応答とも公開できた。表の公開Buildは、この現行コードによる再コンパイル結果を含む。
+したがって、現時点で確認した範囲は96文書、5業界・5部門、3用途に限られる。製品設計のgovernanceとplanningは抽出契約v4、製品設計のoperationsと品質薬事の2用途はv5で測定しており、単一契約版の全体性能を示す集計ではない。品質薬事operationsの4応答はすべて初回compileでProfile、Relation、Claimを保存したが、未解決Conflictを許可しないIntentの公開条件を満たさなかった。その後、Conflict解析とRelation coverage passを修正し、LLMを再実行しないrecompileで4応答とも公開できた。追加した3部門はコミット`44e2086`の現行compileでfresh抽出し、その後にexecution relation familyの補完だけをrecompileで検証した。表の公開Buildは、これらの現行コードによる再コンパイル結果を含む。
 
 ## governanceの結果
 
@@ -95,13 +98,27 @@ fresh 4の生応答は、質問必須の`exception_to`を3/3、`records_executio
 
 4回の品質薬事operations応答を通じて、質問必須の`exception_to`は2/3、2/3、3/3、3/3と改善した。生応答の全Relation厳密一致は7/9、7/9、8/9、5/9と揺れたが、現行recompileでは最後の応答を8/9まで補完し、4応答すべてを公開できた。正しいRelationを安全に利用する経路と、限定条件下の分類揺れを吸収する経路は改善したが、端点誤りや列挙漏れは補完していない。
 
+## 3業界へoperationsを広げた結果
+
+coverage passの過剰補完を確認するため、既評価部門と離れた金融コンプライアンス、ソフトウェアセキュリティ、エネルギー系統運用で各12文書をfresh実行した。いずれもProfile 12件を生成して公開でき、未解決Conflictは0件だった。
+
+| fresh実行 | 生応答Gold一致 | 現行Gold一致 | 現行出力Relation | 現行precision | 現行recall | coverage追加 |
+|---|---:|---:|---:|---:|---:|---:|
+| 金融コンプライアンス | 8/9 | 9/9 | 14 | 64.3% | 100% | 1 |
+| ソフトウェアセキュリティ | 9/9 | 9/9 | 12 | 75.0% | 100% | 0 |
+| エネルギー系統運用 | 9/9 | 9/9 | 12 | 75.0% | 100% | 0 |
+
+3応答とも`applies_to`と`exception_to`を各3/3抽出した。`records_execution_of`はソフトウェアとエネルギーで3/3、金融で2/3だった。金融のS3実施記録は、同じ実行内のS2と異なり、`records_execution_of`ではなく`non_effective operational_position`だけを返した。この分類揺れに対し、sourceがfront matter上の`execution_log`かつ公式Record、targetが承認済み`temporary_deviation`、両Profileのscopeが一致し、source側Evidenceで接地された非有効Positionである場合だけ、`records_execution_of`を併存させる補完を追加した。補完した1件はGoldと一致し、金融のrecallは88.9%から100%になった。
+
+ソフトウェアとエネルギーでは、必要なRelationがすでに揃っていたためcoverage passは発火しなかった。36文書を通じた追加は正例1件だけで、観測範囲内の誤補完は0件である。ただし、実際の発火数が1件にすぎないため、execution補完のprecisionを一般化できる規模ではない。Gold外のRelationは、各応答の`order_of_precedence` 3件に加え、金融で`operational_position` 2件が残った。これらは原文根拠があるため削除しておらず、Goldを完全な正例集合とみなしたprecisionがrecallより低い主因になっている。
+
 ## 現時点の判断
 
 製品設計部のgovernance 12文書では、今回の修正により既知のRelation欠落を再現可能な形で解消した。operationsのcoverage passは製品設計と品質薬事の両方で働き、保存応答の分類揺れを限定条件付きで補完できた。正当な期限付き例外と実施記録を偽の未解決Conflictにする問題も、対象の4応答では解消した。一方、品質薬事governanceは7/9に留まり、Relation端点のコピー誤りと列挙漏れも残るため、部門横断の再現率が十分とはいえない。
 
-確認済みデータは60文書まで増えたが、全2,880文書の一部にすぎず、Vanilla RAGを上回ったとは判断できない。今回測ったのもコンパイル段階だけであり、検索順位、必要根拠の回収、最終回答の正しさは別に評価する必要がある。
+確認済みデータは96文書まで増えたが、全2,880文書の一部にすぎず、Vanilla RAGを上回ったとは判断できない。今回測ったのもコンパイル段階だけであり、検索順位、必要根拠の回収、最終回答の正しさは別に評価する必要がある。
 
-次は、同じcoverage passを業界・部門・用途の異なるデータへ広げ、補完条件のprecisionを測る。そのうえで、まだ未対応の端点コピーと列挙漏れをRelation候補単位で検証する。Conflict解決側で曖昧なRelation型を無条件に読み替える方法は採らない。planningについては、Relation型を増やす前にGold Relationが原文から追跡できるよう、文書IDまたは明示的な参照をSourceへ加えるべきかを判断する。
+次は、operations以外のgovernanceまたはtechnical_specを未評価部門でfresh実行し、Relation family補完が用途固有の誤推論を起こさないことを確認する。そのうえで、まだ未対応の端点コピーと列挙漏れをRelation候補単位で検証する。Conflict解決側で曖昧なRelation型を無条件に読み替える方法は採らない。planningについては、Relation型を増やす前にGold Relationが原文から追跡できるよう、文書IDまたは明示的な参照をSourceへ加えるべきかを判断する。
 
 ## 実行記録
 
@@ -116,3 +133,6 @@ fresh 4の生応答は、質問必須の`exception_to`を3/3、`records_executio
 - 品質薬事 operations v5 fresh 2（failed-build保存）: `target/benchmarks/enterprise-domain-actual/2026-08-06-relation-v5-healthcare-quality-regulatory-operations-luna-v2/`
 - 品質薬事 operations v6 fresh 3とrecompile成功: `target/benchmarks/enterprise-domain-actual/2026-08-06-relation-v6-healthcare-quality-regulatory-operations-luna-v3/`
 - 品質薬事 operations v6 fresh 4とcoverage pass後のrecompile成功: `target/benchmarks/enterprise-domain-actual/2026-08-06-relation-v6-healthcare-quality-regulatory-operations-luna-v4/knowledge-build-recompiled-coverage-v2/`
+- 金融コンプライアンス operations fresh実行とrelation family補完: `target/benchmarks/enterprise-domain-actual/2026-08-06-44e2086-finance-compliance-operations-luna-v1/knowledge-build-recompiled-relation-family-v1/`
+- ソフトウェアセキュリティ operations fresh実行と非退行確認: `target/benchmarks/enterprise-domain-actual/2026-08-06-44e2086-software-security-operations-luna-v1/knowledge-build-recompiled-relation-family-v1/`
+- エネルギー系統運用 operations fresh実行と非退行確認: `target/benchmarks/enterprise-domain-actual/2026-08-06-44e2086-energy-grid-operations-operations-luna-v1/knowledge-build-recompiled-relation-family-v1/`
