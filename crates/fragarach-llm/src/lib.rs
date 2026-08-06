@@ -598,7 +598,7 @@ fn document_profile_extraction_prompt(
          Relation kind is supporting detail retained with the source chunks. Use operational_position when\n\
          the evidence decides a position but does not require a more specific relation kind. This is the\n\
          normal kind for non_effective documents. Other kinds are limited to supersedes,\n\
-         amends, applies_to, exception_to, conflicts_with, approves,\n\
+         amends, proposes_change_to, applies_to, exception_to, conflicts_with, approves,\n\
          records_execution_of, order_of_precedence, and derived_from. Emit a relation only when the evidence\n\
          explicitly supports it. conflicts_with means that two documents state incompatible values or rules;\n\
          emit it even when authority, time, or lifecycle metadata later allows deterministic resolution.\n\
@@ -611,6 +611,11 @@ fn document_profile_extraction_prompt(
          scope or time. records_execution_of means that a primary record documents actual performance of the\n\
          target instruction or deviation; match the action and scope, and do not require a printed document ID\n\
          when the text explicitly identifies the target document type and the endpoint is otherwise unique.\n\
+         proposes_change_to means that an unapproved proposal or draft explicitly proposes a future change to\n\
+         an identified current rule or specification. Use non_effective position: the proposal remains\n\
+         non-operative and the target remains governing. Do not infer this relation from draft status alone.\n\
+         An approved amendment changing the clause it amends is represented by amends; do not also emit\n\
+         conflicts_with for that same intentional scoped change unless an independent incompatibility remains.\n\
          Relations are not mutually exclusive. When stale guidance states a value incompatible with a formal\n\
          policy and the policy also has precedence, emit both conflicts_with and order_of_precedence for that\n\
          document pair, each with its own exact evidence.\n\
@@ -720,7 +725,7 @@ fn document_profile_response_schema() -> Value {
                     "properties": {
                         "id": {"type": "string", "minLength": 1},
                         "position": {"type": "string", "enum": ["dominates", "conditional", "non_effective", "unresolved"]},
-                        "kind": {"type": "string", "enum": ["operational_position", "supersedes", "amends", "applies_to", "exception_to", "conflicts_with", "approves", "records_execution_of", "order_of_precedence", "derived_from"]},
+                        "kind": {"type": "string", "enum": ["operational_position", "supersedes", "amends", "proposes_change_to", "applies_to", "exception_to", "conflicts_with", "approves", "records_execution_of", "order_of_precedence", "derived_from"]},
                         "source_id": {"type": "string", "minLength": 1},
                         "target_id": {"type": "string", "minLength": 1},
                         "source_clauses": {"type": "array", "items": {"type": "string"}},
@@ -856,6 +861,13 @@ mod tests {
                 .iter()
                 .any(|kind| kind == "approves")
         );
+        assert!(
+            schema["properties"]["relations"]["items"]["properties"]["kind"]["enum"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|kind| kind == "proposes_change_to")
+        );
         assert_eq!(
             schema["properties"]["relations"]["items"]["properties"]["position"]["enum"]
                 .as_array()
@@ -877,6 +889,8 @@ mod tests {
         assert!(prompt.contains("applies_to means"));
         assert!(prompt.contains("exception_to means"));
         assert!(prompt.contains("records_execution_of means"));
+        assert!(prompt.contains("proposes_change_to means"));
+        assert!(prompt.contains("represented by amends; do not also emit"));
         assert!(prompt.contains("never replaces an evidenced conflicts_with relation"));
     }
 

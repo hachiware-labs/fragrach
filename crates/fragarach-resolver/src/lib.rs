@@ -190,7 +190,10 @@ impl DocumentResolver for RelationGraphResolver {
             else {
                 continue;
             };
-            if !source_profile.force.approved {
+            let is_non_effective_proposal = relation.kind == RelationKind::ProposesChangeTo
+                && relation.position == fragarach_ir::DocumentPosition::NonEffective
+                && source_profile.role == DocumentRole::Proposal;
+            if !source_profile.force.approved && !is_non_effective_proposal {
                 if let Some(index) = decision_index.get(&relation.source_id).copied() {
                     push_reason(
                         &mut outcome.decisions[index],
@@ -210,7 +213,10 @@ impl DocumentResolver for RelationGraphResolver {
                 source_disposition,
                 Disposition::Historical | Disposition::Unresolved
             ) || (*source_disposition == Disposition::Excluded
-                && relation.kind != RelationKind::DerivedFrom)
+                && !matches!(
+                    relation.kind,
+                    RelationKind::DerivedFrom | RelationKind::ProposesChangeTo
+                ))
             {
                 continue;
             }
@@ -344,6 +350,10 @@ impl DocumentResolver for RelationGraphResolver {
                         DecisionReason::ClauseAmendment,
                         relation,
                     );
+                }
+                RelationKind::ProposesChangeTo => {
+                    append_relation_path(&mut outcome.decisions[source_index], relation);
+                    append_relation_path(&mut outcome.decisions[target_index], relation);
                 }
                 RelationKind::AppliesTo => {
                     if context.requested_roles.contains(&source_profile.role) {
@@ -1406,5 +1416,59 @@ mod tests {
         assert_eq!(unaffected.decisions[0].disposition, Disposition::Reference);
         assert_eq!(unaffected.decisions[1].disposition, Disposition::Reference);
         assert_eq!(unaffected.decisions[2].disposition, Disposition::Canonical);
+    }
+
+    #[test]
+    fn proposed_change_is_grounded_without_making_the_draft_operative() {
+        let mut draft = profile("draft", DocumentRole::Proposal, 2);
+        draft.force.approved = false;
+        let specification = profile("specification", DocumentRole::Normative, 9);
+        let candidates = vec![
+            ResolutionCandidate {
+                source_id: "draft".to_owned(),
+                relevance: 0.95,
+            },
+            ResolutionCandidate {
+                source_id: "specification".to_owned(),
+                relevance: 0.90,
+            },
+        ];
+        let relation = DocumentRelation {
+            id: "rel-proposal".to_owned(),
+            position: fragarach_ir::DocumentPosition::NonEffective,
+            kind: RelationKind::ProposesChangeTo,
+            source_id: "draft".to_owned(),
+            target_id: "specification".to_owned(),
+            source_clauses: vec!["review deadline".to_owned()],
+            target_clauses: vec!["review deadline".to_owned()],
+            scope: ApplicabilityScope::default(),
+            valid_from: None,
+            valid_to: None,
+            evidence: Vec::new(),
+        };
+        let context = ResolutionContext {
+            intent_id: "technical_spec".to_owned(),
+            as_of: Some("2026-08-01".to_owned()),
+            requested_roles: vec![DocumentRole::Normative],
+            requested_clauses: Vec::new(),
+            scope: ApplicabilityScope::default(),
+        };
+
+        let outcome = RelationGraphResolver.resolve(
+            &context,
+            &candidates,
+            &[draft, specification],
+            &[relation],
+        );
+
+        assert_eq!(outcome.decisions[0].disposition, Disposition::Excluded);
+        assert_eq!(outcome.decisions[1].disposition, Disposition::Canonical);
+        assert_eq!(outcome.decisions[0].relation_path, vec!["rel-proposal"]);
+        assert_eq!(outcome.decisions[1].relation_path, vec!["rel-proposal"]);
+        assert!(
+            !outcome.decisions[0]
+                .reasons
+                .contains(&DecisionReason::RelationInvalid)
+        );
     }
 }

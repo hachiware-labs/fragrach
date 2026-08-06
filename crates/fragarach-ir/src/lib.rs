@@ -273,6 +273,7 @@ pub enum RelationKind {
     OperationalPosition,
     Supersedes,
     Amends,
+    ProposesChangeTo,
     AppliesTo,
     ExceptionTo,
     ConflictsWith,

@@ -2001,6 +2001,40 @@ fn complete_relation_family_coverage(
         .iter()
         .map(|profile| (profile.source_id.as_str(), profile))
         .collect::<std::collections::HashMap<_, _>>();
+    let document_types = evidence
+        .iter()
+        .filter(|item| item.text.trim_start().starts_with("---"))
+        .filter_map(|item| {
+            front_matter_value(&item.text, "document_type")
+                .map(|document_type| (item.source_id.as_str(), document_type))
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+
+    let amendment_pairs = relations
+        .iter()
+        .filter(|relation| relation.kind == fragarach_ir::RelationKind::Amends)
+        .filter(|relation| {
+            document_types
+                .get(relation.source_id.as_str())
+                .is_some_and(|document_type| document_type == "specification_amendment")
+                && profile_by_id
+                    .get(relation.source_id.as_str())
+                    .is_some_and(|profile| profile.force.approved)
+                && profile_by_id
+                    .get(relation.target_id.as_str())
+                    .is_some_and(|profile| profile.force.approved)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    relations.retain(|relation| {
+        relation.kind != fragarach_ir::RelationKind::ConflictsWith
+            || !amendment_pairs.iter().any(|amendment| {
+                amendment.source_id == relation.source_id
+                    && amendment.target_id == relation.target_id
+                    && relation_clauses_overlap(amendment, relation)
+            })
+    });
+
     let mut covered_pairs = relations
         .iter()
         .filter(|relation| relation.kind == fragarach_ir::RelationKind::AppliesTo)
@@ -2060,14 +2094,6 @@ fn complete_relation_family_coverage(
         });
     }
 
-    let document_types = evidence
-        .iter()
-        .filter(|item| item.text.trim_start().starts_with("---"))
-        .filter_map(|item| {
-            front_matter_value(&item.text, "document_type")
-                .map(|document_type| (item.source_id.as_str(), document_type))
-        })
-        .collect::<std::collections::HashMap<_, _>>();
     let mut execution_pairs = relations
         .iter()
         .filter(|relation| relation.kind == fragarach_ir::RelationKind::RecordsExecutionOf)
@@ -2126,6 +2152,29 @@ fn complete_relation_family_coverage(
 
     relations.extend(additions);
     relations.sort_by(|left, right| left.id.cmp(&right.id));
+}
+
+fn relation_clauses_overlap(left: &DocumentRelation, right: &DocumentRelation) -> bool {
+    let left_clauses = left
+        .source_clauses
+        .iter()
+        .chain(&left.target_clauses)
+        .filter(|clause| !clause.trim().is_empty())
+        .collect::<Vec<_>>();
+    let right_clauses = right
+        .source_clauses
+        .iter()
+        .chain(&right.target_clauses)
+        .filter(|clause| !clause.trim().is_empty())
+        .collect::<Vec<_>>();
+
+    !left_clauses.is_empty()
+        && !right_clauses.is_empty()
+        && left_clauses.iter().any(|left_clause| {
+            right_clauses
+                .iter()
+                .any(|right_clause| left_clause.trim().eq_ignore_ascii_case(right_clause.trim()))
+        })
 }
 
 fn scopes_equivalent(left: &ApplicabilityScope, right: &ApplicabilityScope) -> bool {
@@ -2197,9 +2246,13 @@ fn relation_subjects_overlap(left: &str, right: &str) -> bool {
 
 fn role_from_document_type(document_type: &str) -> DocumentRole {
     match document_type {
-        "policy" | "standard" | "master_contract" | "specification" | "amendment" => {
-            DocumentRole::Normative
-        }
+        "policy"
+        | "standard"
+        | "master_contract"
+        | "specification"
+        | "amendment"
+        | "technical_specification"
+        | "specification_amendment" => DocumentRole::Normative,
         "procedure"
         | "operating_procedure"
         | "site_work_instruction"
@@ -2212,7 +2265,9 @@ fn role_from_document_type(document_type: &str) -> DocumentRole {
             DocumentRole::Record
         }
         "analysis" | "options_analysis" | "initial_report" => DocumentRole::Analysis,
-        "proposal" | "draft" | "vendor_proposal" | "change_request" => DocumentRole::Proposal,
+        "proposal" | "draft" | "technical_draft" | "vendor_proposal" | "change_request" => {
+            DocumentRole::Proposal
+        }
         "faq" => DocumentRole::Communication,
         _ => DocumentRole::Reference,
     }
@@ -3123,6 +3178,23 @@ mod tests {
     }
 
     #[test]
+    fn technical_document_types_map_to_normative_and_proposal_roles() {
+        for document_type in ["technical_specification", "specification_amendment"] {
+            let mut item = evidence(document_type, 0);
+            item.text = format!("---\ndocument_type: {document_type}\nstatus: current\n---");
+
+            let profile = fallback_document_profile(document_type, &[item]).unwrap();
+
+            assert_eq!(profile.role, DocumentRole::Normative);
+        }
+
+        let mut item = evidence("technical_draft", 0);
+        item.text = "---\ndocument_type: technical_draft\nstatus: draft\n---".to_owned();
+        let profile = fallback_document_profile("technical_draft", &[item]).unwrap();
+        assert_eq!(profile.role, DocumentRole::Proposal);
+    }
+
+    #[test]
     fn unique_document_ids_normalize_relation_endpoints_but_ambiguous_ids_do_not() {
         let mut first_evidence = evidence("src-policy-v1", 0);
         first_evidence.text =
@@ -3343,6 +3415,66 @@ mod tests {
         assert_eq!(applies_to.scope.sites, vec!["神戸品質センター"]);
         assert_eq!(applies_to.source_clauses, vec!["上位手順"]);
         assert_eq!(applies_to.evidence.len(), 1);
+    }
+
+    #[test]
+    fn approved_specification_amendment_absorbs_only_same_clause_conflict() {
+        let mut amendment_metadata = evidence("amendment", 0);
+        amendment_metadata.text =
+            "---\ndocument_type: specification_amendment\napproved: true\n---".to_owned();
+        let specification_metadata = evidence("specification", 0);
+        let mut amendment =
+            fallback_document_profile("amendment", std::slice::from_ref(&amendment_metadata))
+                .unwrap();
+        amendment.role = DocumentRole::Normative;
+        amendment.force.approved = true;
+        let mut specification = fallback_document_profile(
+            "specification",
+            std::slice::from_ref(&specification_metadata),
+        )
+        .unwrap();
+        specification.role = DocumentRole::Normative;
+        specification.force.approved = true;
+        let relation = |id: &str, kind: RelationKind, clause: &str| DocumentRelation {
+            id: id.to_owned(),
+            position: DocumentPosition::Conditional,
+            kind,
+            source_id: "amendment".to_owned(),
+            target_id: "specification".to_owned(),
+            source_clauses: vec![clause.to_owned()],
+            target_clauses: vec![clause.to_owned()],
+            scope: ApplicabilityScope::default(),
+            valid_from: None,
+            valid_to: None,
+            evidence: Vec::new(),
+        };
+        let mut relations = vec![
+            relation("amends", RelationKind::Amends, "review deadline"),
+            relation(
+                "same-conflict",
+                RelationKind::ConflictsWith,
+                "review deadline",
+            ),
+            relation(
+                "other-conflict",
+                RelationKind::ConflictsWith,
+                "retention period",
+            ),
+        ];
+
+        complete_relation_family_coverage(
+            &mut relations,
+            &[amendment, specification],
+            &[amendment_metadata, specification_metadata],
+        );
+
+        assert_eq!(relations.len(), 2);
+        assert!(relations.iter().any(|relation| relation.id == "amends"));
+        assert!(
+            relations
+                .iter()
+                .any(|relation| relation.id == "other-conflict")
+        );
     }
 
     #[test]
