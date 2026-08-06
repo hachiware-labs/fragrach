@@ -385,6 +385,8 @@ test("Actual Buildを根拠単位に束ねてConflictとともに検索する", 
   assert.equal(compactPacket.relation.position, "unresolved");
   assert.deepEqual(compactPacket.relation.contender_source_ids, ["src", "src-2"]);
   assert(compactPacket.text.includes("変更側: POL-1 revision 2"));
+  assert(compactPacket.text.includes("位置づけ: Unresolved"));
+  assert(!compactPacket.text.includes("/ contender]"));
   assert.equal(compactPacket.text.match(/承認が必要/g)?.length, 1);
 
   const fallback = buildActualChunks([directory], {

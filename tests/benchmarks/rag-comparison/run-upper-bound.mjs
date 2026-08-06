@@ -836,7 +836,10 @@ export function buildActualChunks(buildDirectories, options = {}) {
     const relationIds = packet.purpose?.kind === "decision"
       ? packet.purpose.relation_ids ?? []
       : [];
-    const references = (packet.materials ?? []).flatMap((material) =>
+    const roleOrder = { verifier: 0, governing: 1, excluded: 1, contender: 1 };
+    const orderedMaterials = [...(packet.materials ?? [])].sort((left, right) =>
+      (roleOrder[left.role] ?? 2) - (roleOrder[right.role] ?? 2));
+    const references = orderedMaterials.flatMap((material) =>
       (material.evidence_ids ?? []).map((evidenceId) => ({
         source_id: material.source_id,
         evidence_id: evidenceId,
@@ -866,9 +869,15 @@ export function buildActualChunks(buildDirectories, options = {}) {
         verifier_source_ids: byRole("verifier"),
         evidence: references,
       };
+      const position = {
+        dominates: "Dominates",
+        conditional: "Conditional",
+        non_effective: "NonEffective",
+        unresolved: "Unresolved",
+      }[relation.position] ?? relation.position;
       const header = [
         "種別: Decision Packet",
-        `位置づけ: ${relation.position}`,
+        `位置づけ: ${position}`,
         `変更側: ${identity(sourceProfile, relation.source_id)}`,
         `基準側: ${identity(targetProfile, relation.target_id)}`,
         `詳細関係: ${relation.source_id} ${relation.kind} ${relation.target_id}`,
@@ -876,15 +885,8 @@ export function buildActualChunks(buildDirectories, options = {}) {
         `有効開始: ${relation.valid_from ?? "未指定"}`,
         `有効終了: ${relation.valid_to ?? "未指定"}`,
       ];
-      const excerpts = cited.flatMap((item) => {
-        const material = (packet.materials ?? []).find((candidate) =>
-          candidate.source_id === item.source_id &&
-          (candidate.evidence_ids ?? []).includes(item.evidence_id));
-        return [
-          `[${item.source_id} / ${(item.heading_path ?? []).join(" / ")} / ${material?.role ?? "material"}]`,
-          item.text,
-        ];
-      });
+      const excerpts = cited.map((item) =>
+        `[${item.source_id} / ${(item.heading_path ?? []).join(" / ")}]\n${item.text}`);
       chunks.push({
         id: `actual:decision-packet:${packet.intent_id}/${packet.id}/${relation.id}`,
         unit_type: relation.kind === "conflicts_with" ? "conflict" : "relation_dossier",
@@ -897,7 +899,7 @@ export function buildActualChunks(buildDirectories, options = {}) {
         }))),
         packet,
         relation: derivedRelation,
-        text: [...header, "", "原文証拠:", ...excerpts].join("\n"),
+        text: `${header.join("\n")}\n\n原文証拠:\n${excerpts.join("\n\n")}`,
       });
     }
   }

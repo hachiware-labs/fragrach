@@ -2446,7 +2446,10 @@ fn render_decision_packet(
         );
     }
     text.push_str("\n\n原文証拠:");
-    for material in &packet.materials {
+    let mut materials = packet.materials.iter().collect::<Vec<_>>();
+    materials.sort_by_key(|material| usize::from(material.role != PacketMaterialRole::Verifier));
+    let mut first_excerpt = true;
+    for material in materials {
         for evidence_id in &material.evidence_ids {
             let Some(item) =
                 evidence_by_id.get(&(material.source_id.as_str(), evidence_id.as_str()))
@@ -2455,12 +2458,13 @@ fn render_decision_packet(
             };
             let _ = write!(
                 &mut text,
-                "\n[{} / {} / {:?}]\n{}",
+                "{}[{} / {}]\n{}",
+                if first_excerpt { "\n" } else { "\n\n" },
                 item.source_id,
                 item.heading_path.join(" / "),
-                material.role,
                 item.text
             );
+            first_excerpt = false;
         }
     }
     text
