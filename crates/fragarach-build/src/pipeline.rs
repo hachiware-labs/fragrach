@@ -2067,12 +2067,99 @@ fn complete_relation_family_coverage(
             })
     });
 
+    let mut additions = Vec::new();
+    let mut proposal_pairs = relations
+        .iter()
+        .filter(|relation| relation.kind == fragarach_ir::RelationKind::ProposesChangeTo)
+        .map(|relation| (relation.source_id.clone(), relation.target_id.clone()))
+        .collect::<HashSet<_>>();
+    for source in profiles {
+        if document_types
+            .get(source.source_id.as_str())
+            .is_none_or(|document_type| document_type != "vendor_proposal")
+            || source.role != DocumentRole::Proposal
+            || source.force.approved
+        {
+            continue;
+        }
+        let Some(proposal_evidence) = evidence.iter().find(|item| {
+            item.source_id == source.source_id
+                && item.text.contains("契約変更")
+                && item.text.contains("署名")
+        }) else {
+            continue;
+        };
+        let proposal_value_evidence = evidence
+            .iter()
+            .filter(|item| {
+                item.source_id == source.source_id
+                    && item
+                        .heading_path
+                        .last()
+                        .is_some_and(|heading| heading.contains("提案"))
+                    && !item.text.trim_start().starts_with('#')
+                    && (item.text.contains("提示") || item.text.contains("提案"))
+                    && !item.text.contains("この節では")
+            })
+            .min_by_key(|item| item.text.chars().count());
+        for target in profiles {
+            if target.source_id == source.source_id
+                || document_types
+                    .get(target.source_id.as_str())
+                    .is_none_or(|document_type| {
+                        !matches!(
+                            document_type.as_str(),
+                            "master_agreement" | "master_contract"
+                        )
+                    })
+                || target.role != DocumentRole::Normative
+                || !target.force.approved
+                || !scopes_equivalent(&source.scope, &target.scope)
+                || proposal_pairs.contains(&(source.source_id.clone(), target.source_id.clone()))
+            {
+                continue;
+            }
+            proposal_pairs.insert((source.source_id.clone(), target.source_id.clone()));
+            let key = format!(
+                "{}:{}:proposes_change_to",
+                source.source_id, target.source_id
+            );
+            additions.push(DocumentRelation {
+                id: format!("coverage_{}", &sha256_hex(key.as_bytes())[..16]),
+                position: fragarach_ir::DocumentPosition::NonEffective,
+                kind: fragarach_ir::RelationKind::ProposesChangeTo,
+                source_id: source.source_id.clone(),
+                target_id: target.source_id.clone(),
+                source_clauses: proposal_evidence
+                    .heading_path
+                    .last()
+                    .cloned()
+                    .into_iter()
+                    .collect(),
+                target_clauses: Vec::new(),
+                scope: source.scope.clone(),
+                valid_from: source.time.valid_from.clone(),
+                valid_to: source.time.valid_to.clone(),
+                evidence: std::iter::once(fragarach_ir::EvidenceReference {
+                    source_id: proposal_evidence.source_id.clone(),
+                    evidence_id: proposal_evidence.evidence_id.clone(),
+                })
+                .chain(
+                    proposal_value_evidence.map(|item| fragarach_ir::EvidenceReference {
+                        source_id: item.source_id.clone(),
+                        evidence_id: item.evidence_id.clone(),
+                    }),
+                )
+                .collect(),
+            });
+        }
+    }
+
     let mut covered_pairs = relations
         .iter()
         .filter(|relation| relation.kind == fragarach_ir::RelationKind::AppliesTo)
         .map(|relation| (relation.source_id.clone(), relation.target_id.clone()))
         .collect::<HashSet<_>>();
-    let mut additions = Vec::new();
 
     for precedence in relations.iter() {
         if precedence.kind != fragarach_ir::RelationKind::OrderOfPrecedence
@@ -2281,6 +2368,7 @@ fn role_from_document_type(document_type: &str) -> DocumentRole {
         "policy"
         | "standard"
         | "master_contract"
+        | "master_agreement"
         | "specification"
         | "amendment"
         | "technical_specification"
@@ -2291,7 +2379,8 @@ fn role_from_document_type(document_type: &str) -> DocumentRole {
         | "work_instruction"
         | "implementation_plan"
         | "temporary_deviation"
-        | "sow" => DocumentRole::Instruction,
+        | "sow"
+        | "statement_of_work" => DocumentRole::Instruction,
         "approval_record" | "decision_record" | "decision_minutes" | "test_record"
         | "execution_log" | "release_record" | "audit_record" | "final_report" => {
             DocumentRole::Record
@@ -2625,8 +2714,9 @@ fn relation_evidence_score(relation: &DocumentRelation, item: &PromptEvidence) -
             "矛盾",
         ],
         "approves" => &["承認", "決定", "採用", "施行", "対象"],
-        "records_execution_of" => &["実施", "実行", "適用", "完了", "記録"],
+        "records_execution_of" => &["決定", "承認", "実施", "実行", "適用", "完了", "記録"],
         "amends" => &["改訂", "修正", "変更", "条", "節"],
+        "proposes_change_to" => &["提案", "未署名", "署名", "変更", "義務", "適用"],
         "exception_to" => &["例外", "逸脱", "免除", "限定"],
         _ => &["適用", "由来", "参照", "関係"],
     };
@@ -3152,6 +3242,44 @@ mod tests {
     }
 
     #[test]
+    fn execution_packet_keeps_approval_and_execution_evidence() {
+        let mut items = vec![
+            evidence("release", 0),
+            evidence("release", 1),
+            evidence("release", 2),
+            evidence("change", 0),
+            evidence("change", 1),
+            evidence("change", 2),
+            evidence("change", 3),
+        ];
+        items[0].text = "本記録は変更申請の実施証跡である。".to_owned();
+        items[1].text = "恒久対策を本番適用した。".to_owned();
+        items[2].text = "本番適用後の完了を記録した。".to_owned();
+        items[3].text = "変更理由は再発防止である。".to_owned();
+        items[4].text = "恒久対策の変更内容を記載する。".to_owned();
+        items[5].text = "本変更申請は変更諮問会議で承認済みである。".to_owned();
+        items[6].text = "補足情報を記載する。".to_owned();
+        let relation = DocumentRelation {
+            id: "execution".to_owned(),
+            position: DocumentPosition::Unresolved,
+            kind: RelationKind::RecordsExecutionOf,
+            source_id: "release".to_owned(),
+            target_id: "change".to_owned(),
+            source_clauses: Vec::new(),
+            target_clauses: Vec::new(),
+            scope: ApplicabilityScope::default(),
+            valid_from: None,
+            valid_to: None,
+            evidence: Vec::new(),
+        };
+
+        let selected = select_relation_evidence(&relation, &items);
+
+        assert!(selected.iter().any(|item| item.text.contains("本番適用")));
+        assert!(selected.iter().any(|item| item.text.contains("承認済み")));
+    }
+
+    #[test]
     fn decision_packet_collapses_derived_roles_and_evidence_into_materials() {
         let items = vec![
             evidence("current", 0),
@@ -3316,6 +3444,26 @@ mod tests {
         item.text = "---\ndocument_type: technical_draft\nstatus: draft\n---".to_owned();
         let profile = fallback_document_profile("technical_draft", &[item]).unwrap();
         assert_eq!(profile.role, DocumentRole::Proposal);
+    }
+
+    #[test]
+    fn commercial_document_types_map_to_contract_roles() {
+        for document_type in ["master_contract", "master_agreement"] {
+            let mut item = evidence(document_type, 0);
+            item.text = format!("---\ndocument_type: {document_type}\nstatus: current\n---");
+
+            let profile = fallback_document_profile(document_type, &[item]).unwrap();
+
+            assert_eq!(profile.role, DocumentRole::Normative);
+        }
+        for document_type in ["sow", "statement_of_work"] {
+            let mut item = evidence(document_type, 0);
+            item.text = format!("---\ndocument_type: {document_type}\nstatus: current\n---");
+
+            let profile = fallback_document_profile(document_type, &[item]).unwrap();
+
+            assert_eq!(profile.role, DocumentRole::Instruction);
+        }
     }
 
     #[test]
@@ -3539,6 +3687,78 @@ mod tests {
         assert_eq!(applies_to.scope.sites, vec!["神戸品質センター"]);
         assert_eq!(applies_to.source_clauses, vec!["上位手順"]);
         assert_eq!(applies_to.evidence.len(), 1);
+    }
+
+    #[test]
+    fn unsigned_vendor_proposal_completes_change_relation_to_master_agreement() {
+        let mut proposal_metadata = evidence("proposal", 0);
+        proposal_metadata.text =
+            "---\ndocument_type: vendor_proposal\napproved: false\n---".to_owned();
+        let mut proposal_fact = evidence("proposal", 1);
+        proposal_fact.heading_path = vec!["契約状態".to_owned()];
+        proposal_fact.text = "この改善案は契約変更として署名されていない。".to_owned();
+        let mut proposal_heading = evidence("proposal", 2);
+        proposal_heading.heading_path = vec!["提案".to_owned()];
+        proposal_heading.text = "## 提案".to_owned();
+        let mut proposal_value = evidence("proposal", 3);
+        proposal_value.heading_path = vec!["提案".to_owned()];
+        proposal_value.text = "供給元は十五分以内の応答案を提示した。".to_owned();
+        let mut master_metadata = evidence("master", 0);
+        master_metadata.text =
+            "---\ndocument_type: master_agreement\napproved: true\n---".to_owned();
+        let mut proposal = fallback_document_profile(
+            "proposal",
+            &[
+                proposal_metadata.clone(),
+                proposal_fact.clone(),
+                proposal_heading.clone(),
+                proposal_value.clone(),
+            ],
+        )
+        .unwrap();
+        proposal.role = DocumentRole::Proposal;
+        proposal.force.approved = false;
+        proposal.scope.entities = vec!["瑞穂フィナンシャルサービス".to_owned()];
+        proposal.scope.contracts = vec!["取引監視契約".to_owned()];
+        let mut master =
+            fallback_document_profile("master", std::slice::from_ref(&master_metadata)).unwrap();
+        master.role = DocumentRole::Normative;
+        master.force.approved = true;
+        master.scope = proposal.scope.clone();
+        let mut relations = Vec::new();
+
+        complete_relation_family_coverage(
+            &mut relations,
+            &[proposal, master],
+            &[
+                proposal_metadata,
+                proposal_fact.clone(),
+                proposal_heading,
+                proposal_value.clone(),
+                master_metadata,
+            ],
+        );
+
+        assert_eq!(relations.len(), 1);
+        let relation = &relations[0];
+        assert_eq!(relation.kind, RelationKind::ProposesChangeTo);
+        assert_eq!(relation.position, DocumentPosition::NonEffective);
+        assert_eq!(relation.source_id, "proposal");
+        assert_eq!(relation.target_id, "master");
+        assert_eq!(relation.source_clauses, vec!["契約状態"]);
+        assert_eq!(relation.evidence.len(), 2);
+        assert!(
+            relation
+                .evidence
+                .iter()
+                .any(|reference| reference.evidence_id == proposal_fact.evidence_id)
+        );
+        assert!(
+            relation
+                .evidence
+                .iter()
+                .any(|reference| reference.evidence_id == proposal_value.evidence_id)
+        );
     }
 
     #[test]
