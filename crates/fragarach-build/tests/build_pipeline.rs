@@ -268,7 +268,8 @@ fn atomically_publishes_complete_build_and_exports_it() {
     assert!(output.join("provenance.json").is_file());
     assert!(output.join("document-profiles.jsonl").is_file());
     assert!(output.join("document-relations.jsonl").is_file());
-    assert!(output.join("relation-dossiers.jsonl").is_file());
+    assert!(output.join("decision-packets.jsonl").is_file());
+    assert!(!output.join("relation-dossiers.jsonl").exists());
     assert_eq!(result.manifest.metrics.document_profiles, 1);
     assert!(
         fs::read_to_string(output.join("provenance.json"))

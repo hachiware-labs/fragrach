@@ -28,6 +28,10 @@ function readJsonl(filePath) {
   return text ? text.split(/\r?\n/).map((line) => JSON.parse(line)) : [];
 }
 
+function readOptionalJsonl(filePath) {
+  return fs.existsSync(filePath) ? readJsonl(filePath) : [];
+}
+
 function walk(directory) {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const target = path.join(directory, entry.name);
@@ -103,14 +107,19 @@ export function evaluatePositions({ corpus, builds }) {
   const expected = expectedPositions(corpus);
   const profiles = builds.flatMap((build) => readJsonl(path.join(build, "document-profiles.jsonl")));
   const relations = builds.flatMap((build) => readJsonl(path.join(build, "document-relations.jsonl")));
-  const dossiers = builds.flatMap((build) => readJsonl(path.join(build, "relation-dossiers.jsonl")));
+  const dossiers = builds.flatMap((build) => readOptionalJsonl(path.join(build, "relation-dossiers.jsonl")));
+  const packets = builds.flatMap((build) => readOptionalJsonl(path.join(build, "decision-packets.jsonl")));
   const profileBySource = new Map(profiles.map((profile) => [profile.source_id, profile]));
   const dossierByRelation = new Map(dossiers.map((dossier) => [dossier.relation_id, dossier]));
+  const packetByRelation = new Map(packets.flatMap((packet) =>
+    (packet.purpose?.kind === "decision" ? packet.purpose.relation_ids ?? [] : [])
+      .map((relationId) => [relationId, packet])));
   const actual = relations.map((relation) => {
     const source = profileBySource.get(relation.source_id);
     const target = profileBySource.get(relation.target_id);
     const evidenceDocuments = new Set(relation.evidence.map((reference) => profileBySource.get(reference.source_id)?.document_id).filter(Boolean));
     const dossier = dossierByRelation.get(relation.id);
+    const packet = packetByRelation.get(relation.id);
     return {
       id: relation.id,
       source: identity(source?.document_id, source?.revision),
@@ -118,7 +127,11 @@ export function evaluatePositions({ corpus, builds }) {
       target: identity(target?.document_id, target?.revision),
       kind: relation.kind,
       evidence_documents: [...evidenceDocuments].sort(),
-      decision_chunks: (dossier?.text.match(/\/ 判断に用いる基準\]/g) ?? []).length,
+      decision_chunks: packet
+        ? new Set((packet.materials ?? [])
+          .filter((material) => (material.evidence_ids ?? []).length > 0)
+          .map((material) => material.source_id)).size
+        : (dossier?.text.match(/\/ 判断に用いる基準\]/g) ?? []).length,
     };
   });
   const actualByKey = new Map(actual.map((row) => [positionKey(row.source, row.position, row.target), row]));

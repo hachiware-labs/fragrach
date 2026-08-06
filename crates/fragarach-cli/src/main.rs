@@ -412,13 +412,13 @@ fn main() -> Result<()> {
                     result.manifest.metrics.llm_calls
                 );
                 println!(
-                    "Profile cache: {} hit(s), {} miss(es); profile LLM calls: {}; profiles: {}; relations: {}; dossiers: {}",
+                    "Profile cache: {} hit(s), {} miss(es); profile LLM calls: {}; profiles: {}; relations: {}; decision packets: {}",
                     result.manifest.metrics.profile_cache_hits,
                     result.manifest.metrics.profile_cache_misses,
                     result.manifest.metrics.profile_llm_calls,
                     result.manifest.metrics.document_profiles,
                     result.manifest.metrics.document_relations,
-                    result.manifest.metrics.relation_dossiers
+                    result.manifest.metrics.decision_packets
                 );
             }
             if result.manifest.status == KnowledgeBuildStatus::Failed {

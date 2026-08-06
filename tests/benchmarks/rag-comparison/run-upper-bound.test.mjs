@@ -350,6 +350,43 @@ test("Actual Buildを根拠単位に束ねてConflictとともに検索する", 
     ),
   );
 
+  writeJsonl("document-profiles.jsonl", [
+    { source_id: "src", document_id: "POL-1", revision: "2" },
+    { source_id: "src-2", document_id: "FAQ-1", revision: "1" },
+  ]);
+  writeJsonl("document-relations.jsonl", [
+    {
+      id: "relation",
+      position: "unresolved",
+      kind: "conflicts_with",
+      source_id: "src",
+      target_id: "src-2",
+      scope: {},
+      evidence: [{ source_id: "src", evidence_id: "ev" }],
+    },
+  ]);
+  writeJsonl("decision-packets.jsonl", [
+    {
+      id: "packet:design-review:relation",
+      intent_id: "design-review",
+      purpose: { kind: "decision", relation_ids: ["relation"] },
+      materials: [
+        { source_id: "src", role: "contender", evidence_ids: ["ev"] },
+        { source_id: "src-2", role: "contender" },
+      ],
+    },
+  ]);
+  const withDecisionPacket = buildActualChunks([directory], {
+    includeDecisionPackets: true,
+  });
+  const compactPacket = withDecisionPacket.find((chunk) =>
+    chunk.id.startsWith("actual:decision-packet:"));
+  assert(compactPacket);
+  assert.equal(compactPacket.relation.position, "unresolved");
+  assert.deepEqual(compactPacket.relation.contender_source_ids, ["src", "src-2"]);
+  assert(compactPacket.text.includes("変更側: POL-1 revision 2"));
+  assert.equal(compactPacket.text.match(/承認が必要/g)?.length, 1);
+
   const fallback = buildActualChunks([directory], {
     evidenceFallback: true,
   });

@@ -8,11 +8,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use fragarach_ir::{
-    ApplicabilityScope, BuildArtifact, BuildMetrics, Claim, CompilationPolicy, Diagnostic,
-    DiagnosticCounts, DiagnosticSeverity, DocumentProfile, DocumentRelation, DocumentRole,
-    ForceLevel, ForceProfile, IR_SCHEMA_COMPATIBILITY_POLICY, IR_SCHEMA_VERSION,
-    KnowledgeBuildManifest, KnowledgeBuildStatus, ParsedDocument, RelationDossier, SourceManifest,
-    SourceState, TemporalProfile, UsageIntent, is_compatible_schema,
+    ApplicabilityScope, BuildArtifact, BuildMetrics, Claim, CompilationPolicy, DecisionPacket,
+    Diagnostic, DiagnosticCounts, DiagnosticSeverity, DocumentProfile, DocumentRelation,
+    DocumentRole, ForceLevel, ForceProfile, IR_SCHEMA_COMPATIBILITY_POLICY, IR_SCHEMA_VERSION,
+    KnowledgeBuildManifest, KnowledgeBuildStatus, PacketMaterial, PacketMaterialRole,
+    PacketPurpose, ParsedDocument, SourceManifest, SourceState, TemporalProfile, UsageIntent,
+    is_compatible_schema,
 };
 use fragarach_llm::{
     CLAIM_EXTRACTION_CONTRACT_VERSION, ClaimExtractionRequest, ClaimExtractionResponse,
@@ -197,7 +198,14 @@ fn rag_export_records(build: &Path) -> Result<(KnowledgeBuildManifest, Vec<serde
     ensure_schema(&manifest.schema_version, "Knowledge Build")?;
     let claims: Vec<Claim> = read_jsonl(&build.join("claims.jsonl"))?;
     let evidence: Vec<PromptEvidence> = read_jsonl(&build.join("evidence.jsonl"))?;
-    let dossiers: Vec<RelationDossier> = read_jsonl(&build.join("relation-dossiers.jsonl"))?;
+    let packet_path = build.join("decision-packets.jsonl");
+    let packets: Vec<DecisionPacket> = if packet_path.exists() {
+        read_jsonl(&packet_path)?
+    } else {
+        Vec::new()
+    };
+    let profiles: Vec<DocumentProfile> = read_jsonl(&build.join("document-profiles.jsonl"))?;
+    let relations: Vec<DocumentRelation> = read_jsonl(&build.join("document-relations.jsonl"))?;
     let conflicts: Vec<fragarach_ir::Conflict> = read_jsonl(&build.join("conflicts.jsonl"))?;
     let diagnostics: Vec<Diagnostic> = read_jsonl(&build.join("diagnostics.jsonl"))?;
     let mut records = Vec::new();
@@ -281,16 +289,38 @@ fn rag_export_records(build: &Path) -> Result<(KnowledgeBuildManifest, Vec<serde
         });
         records.push(record);
     }
-    for dossier in dossiers {
+    for packet in packets {
+        let text = render_decision_packet(&packet, &profiles, &relations, &evidence);
         records.push(serde_json::json!({
-            "id": format!("dossier:{}", dossier.id),
-            "text": dossier.text.clone(),
+            "id": format!("packet:{}", packet.id),
+            "text": text,
             "metadata": {
                 "intent_id": manifest.intent_id,
-                "unit_type": "relation_dossier",
-                "relation_dossier": dossier,
+                "unit_type": "decision_packet",
+                "decision_packet": packet,
             }
         }));
+    }
+    if !packet_path.exists() {
+        for dossier in read_jsonl::<serde_json::Value>(&build.join("relation-dossiers.jsonl"))? {
+            let id = dossier
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("legacy");
+            let text = dossier
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            records.push(serde_json::json!({
+                "id": format!("dossier:{id}"),
+                "text": text,
+                "metadata": {
+                    "intent_id": manifest.intent_id,
+                    "unit_type": "relation_dossier",
+                    "relation_dossier": dossier,
+                }
+            }));
+        }
     }
     let conflict_diagnostic_ids = conflicts
         .iter()
@@ -528,12 +558,7 @@ pub fn compile_workspace(
             .enumerate()
             .map(|(index, reason)| relation_validation_diagnostic(index, reason)),
     );
-    let relation_dossiers = build_relation_dossiers(
-        &intent.id,
-        &document_profiles,
-        &document_relations,
-        &evidence,
-    );
+    let decision_packets = build_decision_packets(&intent.id, &document_relations, &evidence);
     let conflict_analysis = analyze_conflicts_with_metadata(
         &claims,
         &document_profiles,
@@ -587,9 +612,9 @@ pub fn compile_workspace(
     )?;
     write_jsonl(
         &build_output,
-        "relation_dossiers",
-        "relation-dossiers.jsonl",
-        &relation_dossiers,
+        "decision_packets",
+        "decision-packets.jsonl",
+        &decision_packets,
         &mut artifacts,
     )?;
     write_jsonl(
@@ -639,13 +664,13 @@ pub fn compile_workspace(
         "overview",
         "overview.md",
         &format!(
-            "# Knowledge Build\n\n- Intent: `{}`\n- Claims: {}\n- Evidence: {}\n- Document Profiles: {}\n- Document Relations: {}\n- Relation Dossiers: {}\n- Conflicts: {} (unresolved {})\n- Diagnostics: {}\n",
+            "# Knowledge Build\n\n- Intent: `{}`\n- Claims: {}\n- Evidence: {}\n- Document Profiles: {}\n- Document Relations: {}\n- Decision Packets: {}\n- Conflicts: {} (unresolved {})\n- Diagnostics: {}\n",
             intent.id,
             claims.len(),
             evidence.len(),
             document_profiles.len(),
             document_relations.len(),
-            relation_dossiers.len(),
+            decision_packets.len(),
             conflict_analysis.conflicts.len(),
             unresolved,
             diagnostics.len()
@@ -741,7 +766,7 @@ pub fn compile_workspace(
             profile_completion_tokens,
             document_profiles: document_profiles.len(),
             document_relations: document_relations.len(),
-            relation_dossiers: relation_dossiers.len(),
+            decision_packets: decision_packets.len(),
             llm_concurrency: options.llm_concurrency,
             llm_calls,
             prompt_tokens,
@@ -837,12 +862,7 @@ pub fn recompile_build(options: &RecompileOptions) -> Result<CompileResult> {
     };
     apply_front_matter_to_profiles(&mut document_profiles, &evidence);
     complete_relation_family_coverage(&mut document_relations, &document_profiles, &evidence);
-    let relation_dossiers = build_relation_dossiers(
-        &intent.id,
-        &document_profiles,
-        &document_relations,
-        &evidence,
-    );
+    let decision_packets = build_decision_packets(&intent.id, &document_relations, &evidence);
 
     let mut context = options.conflict_context.clone();
     if context.authority_precedence.is_empty() {
@@ -951,11 +971,15 @@ pub fn recompile_build(options: &RecompileOptions) -> Result<CompileResult> {
         )?;
         write_jsonl(
             staging.path(),
-            "relation_dossiers",
-            "relation-dossiers.jsonl",
-            &relation_dossiers,
+            "decision_packets",
+            "decision-packets.jsonl",
+            &decision_packets,
             &mut discarded_artifacts,
         )?;
+        let legacy_packet_path = staging.path().join("relation-dossiers.jsonl");
+        if legacy_packet_path.exists() {
+            fs::remove_file(legacy_packet_path)?;
+        }
     }
     write_jsonl(
         staging.path(),
@@ -1010,14 +1034,22 @@ pub fn recompile_build(options: &RecompileOptions) -> Result<CompileResult> {
         serde_json::to_string_pretty(&provenance)? + "\n",
     )?;
 
-    let artifacts = old_manifest
+    let mut artifact_kinds = old_manifest
         .artifacts
         .iter()
-        .map(|artifact| {
-            let bytes = fs::read(staging.path().join(&artifact.path))?;
+        .filter(|artifact| artifact.path != "relation-dossiers.jsonl")
+        .map(|artifact| (artifact.path.clone(), artifact.kind.clone()))
+        .collect::<BTreeMap<_, _>>();
+    for artifact in discarded_artifacts {
+        artifact_kinds.insert(artifact.path, artifact.kind);
+    }
+    let artifacts = artifact_kinds
+        .into_iter()
+        .map(|(path, kind)| {
+            let bytes = fs::read(staging.path().join(&path))?;
             Ok(BuildArtifact {
-                kind: artifact.kind.clone(),
-                path: artifact.path.clone(),
+                kind,
+                path,
                 content_hash: format!("sha256:{}", sha256_hex(&bytes)),
             })
         })
@@ -1050,7 +1082,7 @@ pub fn recompile_build(options: &RecompileOptions) -> Result<CompileResult> {
             profile_completion_tokens: 0,
             document_profiles: document_profiles.len(),
             document_relations: document_relations.len(),
-            relation_dossiers: relation_dossiers.len(),
+            decision_packets: decision_packets.len(),
             llm_concurrency: old_manifest.metrics.llm_concurrency,
             llm_calls: 0,
             prompt_tokens: 0,
@@ -2273,122 +2305,165 @@ fn role_from_document_type(document_type: &str) -> DocumentRole {
     }
 }
 
-fn build_relation_dossiers(
+fn build_decision_packets(
     intent_id: &str,
-    profiles: &[DocumentProfile],
     relations: &[DocumentRelation],
     evidence: &[PromptEvidence],
-) -> Vec<RelationDossier> {
-    let profile_by_id = profiles
-        .iter()
-        .map(|profile| (profile.source_id.as_str(), profile))
-        .collect::<std::collections::HashMap<_, _>>();
+) -> Vec<DecisionPacket> {
     relations
         .iter()
-        .filter_map(|relation| {
-            let source = profile_by_id.get(relation.source_id.as_str())?;
-            let target = profile_by_id.get(relation.target_id.as_str())?;
+        .map(|relation| {
             let endpoint_evidence = select_relation_evidence(relation, evidence);
             let mut references = Vec::new();
             let mut seen = HashSet::new();
-            for reference in relation.evidence.iter().cloned().chain(endpoint_evidence.iter().map(|item| fragarach_ir::EvidenceReference {
-                source_id: item.source_id.clone(),
-                evidence_id: item.evidence_id.clone(),
-            })) {
+            for reference in relation
+                .evidence
+                .iter()
+                .cloned()
+                .chain(
+                    endpoint_evidence
+                        .iter()
+                        .map(|item| fragarach_ir::EvidenceReference {
+                            source_id: item.source_id.clone(),
+                            evidence_id: item.evidence_id.clone(),
+                        }),
+                )
+            {
                 if seen.insert((reference.source_id.clone(), reference.evidence_id.clone())) {
                     references.push(reference);
                 }
             }
-            let kind = serde_json::to_value(&relation.kind)
-                .ok()
-                .and_then(|value| value.as_str().map(str::to_owned))
-                .unwrap_or_else(|| "relation".to_owned());
-            let excerpts = endpoint_evidence
-                .iter()
-                .map(|item| format!("[{} / {}]\n{}", item.source_id, item.heading_path.join(" / "), item.text))
-                .collect::<Vec<_>>()
-                .join("\n\n");
-            let mut verifier_source_ids = references
-                .iter()
-                .filter(|reference| {
-                    reference.source_id != relation.source_id
-                        && reference.source_id != relation.target_id
-                })
-                .map(|reference| reference.source_id.clone())
-                .collect::<HashSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>();
-            verifier_source_ids.sort();
-            let (operative_source_ids, excluded_source_ids, contender_source_ids) =
-                match relation.position {
-                    fragarach_ir::DocumentPosition::Dominates => (
-                        vec![relation.source_id.clone()],
-                        vec![relation.target_id.clone()],
-                        Vec::new(),
-                    ),
-                    fragarach_ir::DocumentPosition::Conditional => (
-                        vec![relation.source_id.clone(), relation.target_id.clone()],
-                        Vec::new(),
-                        Vec::new(),
-                    ),
-                    fragarach_ir::DocumentPosition::NonEffective => (
-                        vec![relation.target_id.clone()],
-                        vec![relation.source_id.clone()],
-                        Vec::new(),
-                    ),
-                    fragarach_ir::DocumentPosition::Unresolved => (
-                        Vec::new(),
-                        Vec::new(),
-                        vec![relation.source_id.clone(), relation.target_id.clone()],
-                    ),
-                };
-            let source_identity = format!(
-                "{}{}",
-                source.document_id.as_deref().unwrap_or(&source.source_id),
-                source
-                    .revision
-                    .as_deref()
-                    .map(|revision| format!(" revision {revision}"))
-                    .unwrap_or_default()
-            );
-            let target_identity = format!(
-                "{}{}",
-                target.document_id.as_deref().unwrap_or(&target.source_id),
-                target
-                    .revision
-                    .as_deref()
-                    .map(|revision| format!(" revision {revision}"))
-                    .unwrap_or_default()
-            );
-            Some(RelationDossier {
-                id: format!("dossier:{}:{}", intent_id, relation.id),
+            let (source_role, target_role) = match relation.position {
+                fragarach_ir::DocumentPosition::Dominates => {
+                    (PacketMaterialRole::Governing, PacketMaterialRole::Excluded)
+                }
+                fragarach_ir::DocumentPosition::Conditional => {
+                    (PacketMaterialRole::Governing, PacketMaterialRole::Governing)
+                }
+                fragarach_ir::DocumentPosition::NonEffective => {
+                    (PacketMaterialRole::Excluded, PacketMaterialRole::Governing)
+                }
+                fragarach_ir::DocumentPosition::Unresolved => {
+                    (PacketMaterialRole::Contender, PacketMaterialRole::Contender)
+                }
+            };
+            let mut materials = vec![
+                PacketMaterial {
+                    source_id: relation.source_id.clone(),
+                    role: source_role,
+                    evidence_ids: Vec::new(),
+                },
+                PacketMaterial {
+                    source_id: relation.target_id.clone(),
+                    role: target_role,
+                    evidence_ids: Vec::new(),
+                },
+            ];
+            for reference in references {
+                if let Some(material) = materials
+                    .iter_mut()
+                    .find(|material| material.source_id == reference.source_id)
+                {
+                    material.evidence_ids.push(reference.evidence_id);
+                } else {
+                    materials.push(PacketMaterial {
+                        source_id: reference.source_id,
+                        role: PacketMaterialRole::Verifier,
+                        evidence_ids: vec![reference.evidence_id],
+                    });
+                }
+            }
+            for material in &mut materials {
+                material.evidence_ids.sort();
+                material.evidence_ids.dedup();
+            }
+            DecisionPacket {
+                id: format!("packet:{}:{}", intent_id, relation.id),
                 intent_id: intent_id.to_owned(),
-                relation_id: relation.id.clone(),
-                position: relation.position.clone(),
-                kind: relation.kind.clone(),
-                source_id: relation.source_id.clone(),
-                target_id: relation.target_id.clone(),
-                operative_source_ids,
-                excluded_source_ids,
-                contender_source_ids,
-                verifier_source_ids,
-                evidence: references,
-                text: format!(
-                    "種別: Decision Packet\n位置づけ: {:?}\n変更側: {}\n基準側: {}\n詳細関係: {} {} {}\n適用範囲: {}\n有効開始: {}\n有効終了: {}\n\n原文証拠:\n{}",
-                    relation.position,
-                    source_identity,
-                    target_identity,
-                    relation.source_id,
-                    kind,
-                    relation.target_id,
-                    serde_json::to_string(&relation.scope).unwrap_or_default(),
-                    relation.valid_from.as_deref().unwrap_or("未指定"),
-                    relation.valid_to.as_deref().unwrap_or("未指定"),
-                    excerpts
-                ),
-            })
+                purpose: PacketPurpose::Decision {
+                    relation_ids: vec![relation.id.clone()],
+                },
+                materials,
+            }
         })
         .collect()
+}
+
+fn render_decision_packet(
+    packet: &DecisionPacket,
+    profiles: &[DocumentProfile],
+    relations: &[DocumentRelation],
+    evidence: &[PromptEvidence],
+) -> String {
+    let profile_by_id = profiles
+        .iter()
+        .map(|profile| (profile.source_id.as_str(), profile))
+        .collect::<std::collections::HashMap<_, _>>();
+    let relation_by_id = relations
+        .iter()
+        .map(|relation| (relation.id.as_str(), relation))
+        .collect::<std::collections::HashMap<_, _>>();
+    let evidence_by_id = evidence
+        .iter()
+        .map(|item| ((item.source_id.as_str(), item.evidence_id.as_str()), item))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut text = String::from("種別: Decision Packet");
+    let PacketPurpose::Decision { relation_ids } = &packet.purpose;
+    for relation_id in relation_ids {
+        let Some(relation) = relation_by_id.get(relation_id.as_str()) else {
+            continue;
+        };
+        let identity = |source_id: &str| {
+            let Some(profile) = profile_by_id.get(source_id) else {
+                return source_id.to_owned();
+            };
+            format!(
+                "{}{}",
+                profile.document_id.as_deref().unwrap_or(&profile.source_id),
+                profile
+                    .revision
+                    .as_deref()
+                    .map(|revision| format!(" revision {revision}"))
+                    .unwrap_or_default()
+            )
+        };
+        let kind = serde_json::to_value(&relation.kind)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_else(|| "relation".to_owned());
+        let _ = write!(
+            &mut text,
+            "\n位置づけ: {:?}\n変更側: {}\n基準側: {}\n詳細関係: {} {} {}\n適用範囲: {}\n有効開始: {}\n有効終了: {}",
+            relation.position,
+            identity(&relation.source_id),
+            identity(&relation.target_id),
+            relation.source_id,
+            kind,
+            relation.target_id,
+            serde_json::to_string(&relation.scope).unwrap_or_default(),
+            relation.valid_from.as_deref().unwrap_or("未指定"),
+            relation.valid_to.as_deref().unwrap_or("未指定")
+        );
+    }
+    text.push_str("\n\n原文証拠:");
+    for material in &packet.materials {
+        for evidence_id in &material.evidence_ids {
+            let Some(item) =
+                evidence_by_id.get(&(material.source_id.as_str(), evidence_id.as_str()))
+            else {
+                continue;
+            };
+            let _ = write!(
+                &mut text,
+                "\n[{} / {} / {:?}]\n{}",
+                item.source_id,
+                item.heading_path.join(" / "),
+                material.role,
+                item.text
+            );
+        }
+    }
+    text
 }
 
 const PROFILE_EVIDENCE_PER_SOURCE: usize = 8;
@@ -2955,15 +3030,16 @@ fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CorpusSettings, apply_corpus_hints, checklist_completeness_diagnostics,
-        compact_profile_evidence, complete_relation_family_coverage, fallback_document_profile,
+        CorpusSettings, apply_corpus_hints, build_decision_packets,
+        checklist_completeness_diagnostics, compact_profile_evidence,
+        complete_relation_family_coverage, fallback_document_profile,
         intent_requests_checklist_completeness, merge_front_matter_positions,
         normalize_relation_endpoints, refine_stale_guidance_relations, relation_evidence_score,
         select_relation_evidence, source_aware_batches,
     };
     use fragarach_ir::{
         ApplicabilityScope, Claim, DocumentPosition, DocumentRelation, DocumentRole,
-        EvidenceReference, IntentRequirements, RelationKind, UsageIntent,
+        EvidenceReference, IntentRequirements, PacketMaterialRole, RelationKind, UsageIntent,
     };
     use fragarach_llm::PromptEvidence;
 
@@ -3069,6 +3145,50 @@ mod tests {
                 .any(|item| item.text.contains("反映していない"))
         );
         assert!(!selected.iter().any(|item| item.text.contains("この節では")));
+    }
+
+    #[test]
+    fn decision_packet_collapses_derived_roles_and_evidence_into_materials() {
+        let items = vec![
+            evidence("current", 0),
+            evidence("old", 0),
+            evidence("register", 0),
+        ];
+        let relation = DocumentRelation {
+            id: "position".to_owned(),
+            position: DocumentPosition::Dominates,
+            kind: RelationKind::OperationalPosition,
+            source_id: "current".to_owned(),
+            target_id: "old".to_owned(),
+            source_clauses: Vec::new(),
+            target_clauses: Vec::new(),
+            scope: ApplicabilityScope::default(),
+            valid_from: None,
+            valid_to: None,
+            evidence: vec![EvidenceReference {
+                source_id: "register".to_owned(),
+                evidence_id: "ev-register-0".to_owned(),
+            }],
+        };
+
+        let packets = build_decision_packets("review", &[relation], &items);
+
+        assert_eq!(packets.len(), 1);
+        assert!(packets[0].materials.iter().any(|material| {
+            material.source_id == "current" && material.role == PacketMaterialRole::Governing
+        }));
+        assert!(packets[0].materials.iter().any(|material| {
+            material.source_id == "old" && material.role == PacketMaterialRole::Excluded
+        }));
+        assert!(packets[0].materials.iter().any(|material| {
+            material.source_id == "register"
+                && material.role == PacketMaterialRole::Verifier
+                && material.evidence_ids == ["ev-register-0"]
+        }));
+        let value = serde_json::to_value(&packets[0]).unwrap();
+        assert_eq!(value.as_object().unwrap().len(), 4);
+        assert!(value.get("text").is_none());
+        assert!(value.get("position").is_none());
     }
 
     #[test]

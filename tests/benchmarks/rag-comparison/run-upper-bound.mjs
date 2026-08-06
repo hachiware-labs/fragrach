@@ -597,13 +597,17 @@ export function buildActualChunks(buildDirectories, options = {}) {
     includeClaims = true,
     includeConflicts = true,
     includeDiagnosticAliases = false,
-    includeRelationDossiers = false,
   } = options;
+  const includeDecisionPackets =
+    options.includeDecisionPackets ?? options.includeRelationDossiers ?? false;
   const claimsById = new Map();
   const evidenceById = new Map();
   const conflictsById = new Map();
   const diagnosticsById = new Map();
   const relationDossiers = [];
+  const decisionPackets = [];
+  const profilesById = new Map();
+  const relationsById = new Map();
   const authorityPrecedenceByIntent = new Map();
   const allEvidence = [];
 
@@ -642,9 +646,22 @@ export function buildActualChunks(buildDirectories, options = {}) {
         intent_id: intentId,
       });
     }
-    if (includeRelationDossiers) {
-      for (const dossier of readOptionalJsonl(path.join(buildDirectory, "relation-dossiers.jsonl"))) {
-        relationDossiers.push({ ...dossier, intent_id: dossier.intent_id ?? intentId });
+    if (includeDecisionPackets) {
+      for (const profile of readOptionalJsonl(path.join(buildDirectory, "document-profiles.jsonl"))) {
+        profilesById.set(`${intentId}/${profile.source_id}`, profile);
+      }
+      for (const relation of readOptionalJsonl(path.join(buildDirectory, "document-relations.jsonl"))) {
+        relationsById.set(`${intentId}/${relation.id}`, relation);
+      }
+      const packetPath = path.join(buildDirectory, "decision-packets.jsonl");
+      if (fs.existsSync(packetPath)) {
+        for (const packet of readOptionalJsonl(packetPath)) {
+          decisionPackets.push({ ...packet, intent_id: packet.intent_id ?? intentId });
+        }
+      } else {
+        for (const dossier of readOptionalJsonl(path.join(buildDirectory, "relation-dossiers.jsonl"))) {
+          relationDossiers.push({ ...dossier, intent_id: dossier.intent_id ?? intentId });
+        }
       }
     }
   }
@@ -814,6 +831,75 @@ export function buildActualChunks(buildDirectories, options = {}) {
       relation: dossier,
       text: dossier.text,
     });
+  }
+  for (const packet of decisionPackets) {
+    const relationIds = packet.purpose?.kind === "decision"
+      ? packet.purpose.relation_ids ?? []
+      : [];
+    const references = (packet.materials ?? []).flatMap((material) =>
+      (material.evidence_ids ?? []).map((evidenceId) => ({
+        source_id: material.source_id,
+        evidence_id: evidenceId,
+      })),
+    );
+    const cited = references
+      .map((reference) => evidenceById.get(`${packet.intent_id}/${reference.source_id}/${reference.evidence_id}`))
+      .filter(Boolean);
+    for (const relationId of relationIds) {
+      const relation = relationsById.get(`${packet.intent_id}/${relationId}`);
+      if (!relation) continue;
+      const sourceProfile = profilesById.get(`${packet.intent_id}/${relation.source_id}`);
+      const targetProfile = profilesById.get(`${packet.intent_id}/${relation.target_id}`);
+      const identity = (profile, sourceId) => [
+        profile?.document_id ?? sourceId,
+        profile?.revision ? `revision ${profile.revision}` : "",
+      ].filter(Boolean).join(" ");
+      const byRole = (role) => (packet.materials ?? [])
+        .filter((material) => material.role === role)
+        .map((material) => material.source_id);
+      const derivedRelation = {
+        ...relation,
+        relation_id: relation.id,
+        operative_source_ids: byRole("governing"),
+        excluded_source_ids: byRole("excluded"),
+        contender_source_ids: byRole("contender"),
+        verifier_source_ids: byRole("verifier"),
+        evidence: references,
+      };
+      const header = [
+        "種別: Decision Packet",
+        `位置づけ: ${relation.position}`,
+        `変更側: ${identity(sourceProfile, relation.source_id)}`,
+        `基準側: ${identity(targetProfile, relation.target_id)}`,
+        `詳細関係: ${relation.source_id} ${relation.kind} ${relation.target_id}`,
+        `適用範囲: ${JSON.stringify(relation.scope ?? {})}`,
+        `有効開始: ${relation.valid_from ?? "未指定"}`,
+        `有効終了: ${relation.valid_to ?? "未指定"}`,
+      ];
+      const excerpts = cited.flatMap((item) => {
+        const material = (packet.materials ?? []).find((candidate) =>
+          candidate.source_id === item.source_id &&
+          (candidate.evidence_ids ?? []).includes(item.evidence_id));
+        return [
+          `[${item.source_id} / ${(item.heading_path ?? []).join(" / ")} / ${material?.role ?? "material"}]`,
+          item.text,
+        ];
+      });
+      chunks.push({
+        id: `actual:decision-packet:${packet.intent_id}/${packet.id}/${relation.id}`,
+        unit_type: relation.kind === "conflicts_with" ? "conflict" : "relation_dossier",
+        intent_id: packet.intent_id,
+        evidence: cited.flatMap((item) => [item.source_path, ...(item.source_aliases ?? [])].map((sourcePath) => ({
+          source_id: item.source_id,
+          source: normalizeSource(`sources/${sourcePath}`),
+          section: (item.heading_path ?? []).join(" / ") || "本文",
+          text: item.text,
+        }))),
+        packet,
+        relation: derivedRelation,
+        text: [...header, "", "原文証拠:", ...excerpts].join("\n"),
+      });
+    }
   }
   for (const diagnostic of diagnosticsById.values()) {
     if (diagnostic.code !== "FRG-CST-MISSING-OWNER") continue;

@@ -316,25 +316,35 @@ pub struct DocumentRelation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RelationDossier {
+pub struct DecisionPacket {
     pub id: String,
     pub intent_id: String,
-    pub relation_id: String,
-    pub position: DocumentPosition,
-    pub kind: RelationKind,
+    pub purpose: PacketPurpose,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub materials: Vec<PacketMaterial>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PacketPurpose {
+    Decision { relation_ids: Vec<String> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PacketMaterial {
     pub source_id: String,
-    pub target_id: String,
+    pub role: PacketMaterialRole,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub operative_source_ids: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub excluded_source_ids: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub contender_source_ids: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub verifier_source_ids: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub evidence: Vec<EvidenceReference>,
-    pub text: String,
+    pub evidence_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PacketMaterialRole {
+    Governing,
+    Excluded,
+    Contender,
+    Verifier,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -594,7 +604,8 @@ pub struct BuildMetrics {
     #[serde(default)]
     pub document_relations: usize,
     #[serde(default)]
-    pub relation_dossiers: usize,
+    #[serde(alias = "relation_dossiers")]
+    pub decision_packets: usize,
     #[serde(default)]
     pub llm_concurrency: usize,
     pub llm_calls: usize,
@@ -788,5 +799,32 @@ mod tests {
         assert!(is_compatible_schema("0.2"));
         assert!(!is_compatible_schema("0.1"));
         assert!(!is_compatible_schema("1.0"));
+    }
+
+    #[test]
+    fn decision_packet_keeps_a_small_top_level_contract() {
+        let packet = DecisionPacket {
+            id: "packet:review:relation".to_owned(),
+            intent_id: "review".to_owned(),
+            purpose: PacketPurpose::Decision {
+                relation_ids: vec!["relation".to_owned()],
+            },
+            materials: vec![PacketMaterial {
+                source_id: "source".to_owned(),
+                role: PacketMaterialRole::Governing,
+                evidence_ids: vec!["evidence".to_owned()],
+            }],
+        };
+        let value = serde_json::to_value(packet).unwrap();
+        let object = value.as_object().unwrap();
+        assert_eq!(object.len(), 4);
+        assert!(object.contains_key("id"));
+        assert!(object.contains_key("intent_id"));
+        assert!(object.contains_key("purpose"));
+        assert!(object.contains_key("materials"));
+        assert_eq!(value["purpose"]["kind"], "decision");
+        assert!(value.get("text").is_none());
+        assert!(value.get("position").is_none());
+        assert!(value.get("operative_source_ids").is_none());
     }
 }
