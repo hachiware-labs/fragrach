@@ -364,12 +364,24 @@ test("Actual Buildを根拠単位に束ねてConflictとともに検索する", 
       scope: {},
       evidence: [{ source_id: "src", evidence_id: "ev" }],
     },
+    {
+      id: "relation-implementation",
+      position: "non_effective",
+      kind: "implements_decision",
+      source_id: "src-2",
+      target_id: "src",
+      scope: {},
+      evidence: [{ source_id: "src", evidence_id: "ev" }],
+    },
   ]);
   writeJsonl("decision-packets.jsonl", [
     {
       id: "packet:design-review:relation",
       intent_id: "design-review",
-      purpose: { kind: "decision", relation_ids: ["relation"] },
+      purpose: {
+        kind: "decision",
+        relation_ids: ["relation", "relation-implementation"],
+      },
       materials: [
         { source_id: "src", role: "contender", evidence_ids: ["ev"] },
         { source_id: "src-2", role: "contender" },
@@ -383,9 +395,18 @@ test("Actual Buildを根拠単位に束ねてConflictとともに検索する", 
     chunk.id.startsWith("actual:decision-packet:"));
   assert(compactPacket);
   assert.equal(compactPacket.relation.position, "unresolved");
+  assert.equal(
+    withDecisionPacket.filter((chunk) => chunk.id.startsWith("actual:decision-packet:")).length,
+    1,
+  );
+  assert.deepEqual(
+    compactPacket.relations.map((relation) => relation.id),
+    ["relation", "relation-implementation"],
+  );
   assert.deepEqual(compactPacket.relation.contender_source_ids, ["src", "src-2"]);
   assert(compactPacket.text.includes("変更側: POL-1 revision 2"));
   assert(compactPacket.text.includes("位置づけ: Unresolved"));
+  assert(compactPacket.text.includes("詳細関係: src-2 implements_decision src"));
   assert(!compactPacket.text.includes("/ contender]"));
   assert.equal(compactPacket.text.match(/承認が必要/g)?.length, 1);
 

@@ -491,15 +491,21 @@ fn claim_objects_equivalent(left: &Claim, right: &Claim) -> bool {
     if left.object == right.object {
         return true;
     }
-    left.object
-        .as_str()
-        .zip(right.object.as_str())
+    scalar_claim_text(&left.object)
+        .zip(scalar_claim_text(&right.object))
         .is_some_and(|(left, right)| {
             normalized_scalar_value(left) == normalized_scalar_value(right)
                 || normalized_duration_constraint(left)
                     .zip(normalized_duration_constraint(right))
                     .is_some_and(|(left, right)| left == right)
         })
+}
+
+fn scalar_claim_text(value: &serde_json::Value) -> Option<&str> {
+    value.as_str().or_else(|| {
+        let values = value.as_array()?;
+        (values.len() == 1).then(|| values[0].as_str()).flatten()
+    })
 }
 
 fn normalized_duration_constraint(value: &str) -> Option<String> {
@@ -1361,6 +1367,18 @@ mod tests {
                 evidence_id: format!("ev_{id}"),
             }],
         }
+    }
+
+    #[test]
+    fn singleton_string_array_is_equivalent_to_its_scalar_claim_object() {
+        let scalar = conflicting_claim("scalar", "営業責任者");
+        let mut singleton = conflicting_claim("singleton", "unused");
+        singleton.object = json!(["営業責任者"]);
+
+        assert!(claim_objects_equivalent(&scalar, &singleton));
+
+        singleton.object = json!(["営業責任者", "輸出管理責任者"]);
+        assert!(!claim_objects_equivalent(&scalar, &singleton));
     }
 
     fn exception_relation(source: &str, target: &str) -> DocumentRelation {

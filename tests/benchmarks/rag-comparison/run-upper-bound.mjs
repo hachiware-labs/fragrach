@@ -848,9 +848,11 @@ export function buildActualChunks(buildDirectories, options = {}) {
     const cited = references
       .map((reference) => evidenceById.get(`${packet.intent_id}/${reference.source_id}/${reference.evidence_id}`))
       .filter(Boolean);
-    for (const relationId of relationIds) {
-      const relation = relationsById.get(`${packet.intent_id}/${relationId}`);
-      if (!relation) continue;
+    const packetRelations = relationIds
+      .map((relationId) => relationsById.get(`${packet.intent_id}/${relationId}`))
+      .filter(Boolean);
+    if (packetRelations.length === 0) continue;
+    const derivedRelations = packetRelations.map((relation) => {
       const sourceProfile = profilesById.get(`${packet.intent_id}/${relation.source_id}`);
       const targetProfile = profilesById.get(`${packet.intent_id}/${relation.target_id}`);
       const identity = (profile, sourceId) => [
@@ -869,14 +871,17 @@ export function buildActualChunks(buildDirectories, options = {}) {
         verifier_source_ids: byRole("verifier"),
         evidence: references,
       };
+      return { relation, derivedRelation, sourceProfile, targetProfile, identity };
+    });
+    const header = ["種別: Decision Packet"];
+    for (const { relation, sourceProfile, targetProfile, identity } of derivedRelations) {
       const position = {
         dominates: "Dominates",
         conditional: "Conditional",
         non_effective: "NonEffective",
         unresolved: "Unresolved",
       }[relation.position] ?? relation.position;
-      const header = [
-        "種別: Decision Packet",
+      header.push(
         `位置づけ: ${position}`,
         `変更側: ${identity(sourceProfile, relation.source_id)}`,
         `基準側: ${identity(targetProfile, relation.target_id)}`,
@@ -884,24 +889,27 @@ export function buildActualChunks(buildDirectories, options = {}) {
         `適用範囲: ${JSON.stringify(relation.scope ?? {})}`,
         `有効開始: ${relation.valid_from ?? "未指定"}`,
         `有効終了: ${relation.valid_to ?? "未指定"}`,
-      ];
-      const excerpts = cited.map((item) =>
-        `[${item.source_id} / ${(item.heading_path ?? []).join(" / ")}]\n${item.text}`);
-      chunks.push({
-        id: `actual:decision-packet:${packet.intent_id}/${packet.id}/${relation.id}`,
-        unit_type: relation.kind === "conflicts_with" ? "conflict" : "relation_dossier",
-        intent_id: packet.intent_id,
-        evidence: cited.flatMap((item) => [item.source_path, ...(item.source_aliases ?? [])].map((sourcePath) => ({
-          source_id: item.source_id,
-          source: normalizeSource(`sources/${sourcePath}`),
-          section: (item.heading_path ?? []).join(" / ") || "本文",
-          text: item.text,
-        }))),
-        packet,
-        relation: derivedRelation,
-        text: `${header.join("\n")}\n\n原文証拠:\n${excerpts.join("\n\n")}`,
-      });
+      );
     }
+    const excerpts = cited.map((item) =>
+      `[${item.source_id} / ${(item.heading_path ?? []).join(" / ")}]\n${item.text}`);
+    chunks.push({
+      id: `actual:decision-packet:${packet.intent_id}/${packet.id}`,
+      unit_type: packetRelations.some((relation) => relation.kind === "conflicts_with")
+        ? "conflict"
+        : "relation_dossier",
+      intent_id: packet.intent_id,
+      evidence: cited.flatMap((item) => [item.source_path, ...(item.source_aliases ?? [])].map((sourcePath) => ({
+        source_id: item.source_id,
+        source: normalizeSource(`sources/${sourcePath}`),
+        section: (item.heading_path ?? []).join(" / ") || "本文",
+        text: item.text,
+      }))),
+      packet,
+      relation: derivedRelations[0].derivedRelation,
+      relations: derivedRelations.map(({ derivedRelation }) => derivedRelation),
+      text: `${header.join("\n")}\n\n原文証拠:\n${excerpts.join("\n\n")}`,
+    });
   }
   for (const diagnostic of diagnosticsById.values()) {
     if (diagnostic.code !== "FRG-CST-MISSING-OWNER") continue;

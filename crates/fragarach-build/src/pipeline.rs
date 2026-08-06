@@ -551,7 +551,12 @@ pub fn compile_workspace(
     let mut document_relations =
         merge_front_matter_positions(&document_profiles, normalized.relations, &evidence);
     refine_stale_guidance_relations(&mut document_relations, &document_profiles, &claims);
-    complete_relation_family_coverage(&mut document_relations, &document_profiles, &evidence);
+    complete_relation_family_coverage(
+        &mut document_relations,
+        &document_profiles,
+        &claims,
+        &evidence,
+    );
     diagnostics.extend(
         validate_relations(&document_profiles, &document_relations)
             .into_iter()
@@ -861,7 +866,12 @@ pub fn recompile_build(options: &RecompileOptions) -> Result<CompileResult> {
         Vec::new()
     };
     apply_front_matter_to_profiles(&mut document_profiles, &evidence);
-    complete_relation_family_coverage(&mut document_relations, &document_profiles, &evidence);
+    complete_relation_family_coverage(
+        &mut document_relations,
+        &document_profiles,
+        &claims,
+        &evidence,
+    );
     let decision_packets = build_decision_packets(&intent.id, &document_relations, &evidence);
 
     let mut context = options.conflict_context.clone();
@@ -2027,6 +2037,7 @@ fn refine_stale_guidance_relations(
 fn complete_relation_family_coverage(
     relations: &mut Vec<DocumentRelation>,
     profiles: &[DocumentProfile],
+    claims: &[Claim],
     evidence: &[PromptEvidence],
 ) {
     let profile_by_id = profiles
@@ -2269,8 +2280,451 @@ fn complete_relation_family_coverage(
         });
     }
 
+    let mut corrected_stale_targets = Vec::new();
+    for source in profiles.iter().filter(|profile| {
+        document_types
+            .get(profile.source_id.as_str())
+            .is_some_and(|document_type| document_type == "faq")
+            && profile.role == DocumentRole::Communication
+            && evidence.iter().any(|item| {
+                item.source_id == profile.source_id
+                    && (item.text.contains("反映していない")
+                        || item.text.to_lowercase().contains("stale"))
+            })
+    }) {
+        let candidates = profiles
+            .iter()
+            .filter(|target| {
+                target.source_id != source.source_id
+                    && target.role == DocumentRole::Normative
+                    && target.force.approved
+                    && scopes_equivalent(&source.scope, &target.scope)
+            })
+            .filter_map(|target| {
+                incompatible_claim_evidence_scored(&source.source_id, &target.source_id, claims)
+                    .map(|(score, references)| (target, references, score))
+            })
+            .collect::<Vec<_>>();
+        let Some(best_score) = candidates.iter().map(|(_, _, score)| *score).max() else {
+            continue;
+        };
+        let best = candidates
+            .iter()
+            .filter(|(_, _, score)| score == &best_score)
+            .collect::<Vec<_>>();
+        let [best] = best.as_slice() else {
+            continue;
+        };
+        let (target, references, _) = *best;
+        corrected_stale_targets.push((source.source_id.clone(), target.source_id.clone()));
+        if !relations.iter().chain(&additions).any(|relation| {
+            relation.kind == fragarach_ir::RelationKind::ConflictsWith
+                && relation.source_id == source.source_id
+                && relation.target_id == target.source_id
+        }) {
+            let key = format!("{}:{}:conflicts_with", source.source_id, target.source_id);
+            additions.push(DocumentRelation {
+                id: format!("coverage_{}", &sha256_hex(key.as_bytes())[..16]),
+                position: fragarach_ir::DocumentPosition::NonEffective,
+                kind: fragarach_ir::RelationKind::ConflictsWith,
+                source_id: source.source_id.clone(),
+                target_id: target.source_id.clone(),
+                source_clauses: vec!["旧案内".to_owned()],
+                target_clauses: vec!["現行規則".to_owned()],
+                scope: target.scope.clone(),
+                valid_from: target.time.valid_from.clone(),
+                valid_to: target.time.valid_to.clone(),
+                evidence: references.clone(),
+            });
+        }
+    }
+    relations.retain(|relation| {
+        relation.kind != fragarach_ir::RelationKind::ConflictsWith
+            || corrected_stale_targets
+                .iter()
+                .find(|(source_id, _)| source_id == &relation.source_id)
+                .is_none_or(|(_, target_id)| target_id == &relation.target_id)
+    });
+
+    for source in profiles.iter().filter(|profile| {
+        document_types
+            .get(profile.source_id.as_str())
+            .is_some_and(|document_type| document_type == "test_record")
+            && profile.role == DocumentRole::Record
+            && profile.official_record == Some(true)
+    }) {
+        let candidates = profiles
+            .iter()
+            .filter(|target| {
+                document_types
+                    .get(target.source_id.as_str())
+                    .is_some_and(|document_type| document_type == "specification_amendment")
+                    && target.role == DocumentRole::Normative
+                    && target.force.approved
+                    && scopes_equivalent(&source.scope, &target.scope)
+            })
+            .filter_map(|target| {
+                corroborating_claim_evidence(&source.source_id, &target.source_id, claims)
+                    .map(|references| (target, references))
+            })
+            .collect::<Vec<_>>();
+        let [(target, references)] = candidates.as_slice() else {
+            continue;
+        };
+        if relations.iter().chain(&additions).any(|relation| {
+            relation.kind == fragarach_ir::RelationKind::RecordsExecutionOf
+                && relation.source_id == source.source_id
+                && relation.target_id == target.source_id
+        }) {
+            continue;
+        }
+        let key = format!(
+            "{}:{}:records_execution_of",
+            source.source_id, target.source_id
+        );
+        additions.push(DocumentRelation {
+            id: format!("coverage_{}", &sha256_hex(key.as_bytes())[..16]),
+            position: fragarach_ir::DocumentPosition::NonEffective,
+            kind: fragarach_ir::RelationKind::RecordsExecutionOf,
+            source_id: source.source_id.clone(),
+            target_id: target.source_id.clone(),
+            source_clauses: vec!["判定".to_owned()],
+            target_clauses: vec!["変更値".to_owned()],
+            scope: target.scope.clone(),
+            valid_from: source.time.valid_from.clone(),
+            valid_to: source.time.valid_to.clone(),
+            evidence: references.clone(),
+        });
+    }
+
+    for source in profiles.iter().filter(|profile| {
+        document_types
+            .get(profile.source_id.as_str())
+            .is_some_and(|document_type| document_type == "technical_draft")
+            && profile.role == DocumentRole::Proposal
+            && !profile.force.approved
+    }) {
+        let Some((topic_evidence, topic)) =
+            proposed_technical_change_topic(&source.source_id, evidence)
+        else {
+            continue;
+        };
+        let candidates = profiles
+            .iter()
+            .filter(|target| {
+                document_types
+                    .get(target.source_id.as_str())
+                    .is_some_and(|document_type| document_type == "technical_specification")
+                    && target.role == DocumentRole::Normative
+                    && target.force.approved
+            })
+            .filter_map(|target| {
+                evidence
+                    .iter()
+                    .filter(|item| item.source_id == target.source_id && item.text.contains(&topic))
+                    .min_by_key(|item| item.text.chars().count())
+                    .map(|target_evidence| (target, target_evidence))
+            })
+            .collect::<Vec<_>>();
+        let [(target, target_evidence)] = candidates.as_slice() else {
+            continue;
+        };
+        if relations.iter().chain(&additions).any(|relation| {
+            relation.kind == fragarach_ir::RelationKind::ProposesChangeTo
+                && relation.source_id == source.source_id
+                && relation.target_id == target.source_id
+        }) {
+            continue;
+        }
+        let Some(status_evidence) = evidence.iter().find(|item| {
+            item.source_id == source.source_id
+                && item.text.contains("未承認")
+                && (item.text.contains("適用") || item.text.contains("正式"))
+        }) else {
+            continue;
+        };
+        let key = format!(
+            "{}:{}:proposes_change_to",
+            source.source_id, target.source_id
+        );
+        additions.push(DocumentRelation {
+            id: format!("coverage_{}", &sha256_hex(key.as_bytes())[..16]),
+            position: fragarach_ir::DocumentPosition::NonEffective,
+            kind: fragarach_ir::RelationKind::ProposesChangeTo,
+            source_id: source.source_id.clone(),
+            target_id: target.source_id.clone(),
+            source_clauses: vec!["検討目的".to_owned(), "承認状態".to_owned()],
+            target_clauses: target_evidence
+                .heading_path
+                .last()
+                .cloned()
+                .into_iter()
+                .collect(),
+            scope: target.scope.clone(),
+            valid_from: source.time.valid_from.clone(),
+            valid_to: source.time.valid_to.clone(),
+            evidence: vec![
+                fragarach_ir::EvidenceReference {
+                    source_id: topic_evidence.source_id.clone(),
+                    evidence_id: topic_evidence.evidence_id.clone(),
+                },
+                fragarach_ir::EvidenceReference {
+                    source_id: status_evidence.source_id.clone(),
+                    evidence_id: status_evidence.evidence_id.clone(),
+                },
+                fragarach_ir::EvidenceReference {
+                    source_id: target_evidence.source_id.clone(),
+                    evidence_id: target_evidence.evidence_id.clone(),
+                },
+            ],
+        });
+    }
+
+    for decision in profiles.iter().filter(|profile| {
+        document_types
+            .get(profile.source_id.as_str())
+            .is_some_and(|document_type| document_type == "decision_minutes")
+            && profile.role == DocumentRole::Record
+            && profile.force.approved
+            && profile.official_record == Some(true)
+    }) {
+        let candidates = profiles
+            .iter()
+            .filter(|plan| {
+                document_types
+                    .get(plan.source_id.as_str())
+                    .is_some_and(|document_type| document_type == "implementation_plan")
+                    && plan.role == DocumentRole::Instruction
+                    && plan.force.approved
+            })
+            .filter_map(|plan| {
+                matching_decision_plan_evidence(&decision.source_id, &plan.source_id, evidence)
+                    .map(|references| (plan, references))
+            })
+            .collect::<Vec<_>>();
+        let [(plan, references)] = candidates.as_slice() else {
+            continue;
+        };
+        for (kind, source_id, target_id) in [
+            (
+                fragarach_ir::RelationKind::Approves,
+                &decision.source_id,
+                &plan.source_id,
+            ),
+            (
+                fragarach_ir::RelationKind::ImplementsDecision,
+                &plan.source_id,
+                &decision.source_id,
+            ),
+        ] {
+            if relations.iter().chain(&additions).any(|relation| {
+                relation.kind == kind
+                    && relation.source_id == *source_id
+                    && relation.target_id == *target_id
+            }) {
+                continue;
+            }
+            let kind_name = serde_json::to_value(&kind)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_else(|| "decision_relation".to_owned());
+            let key = format!("{source_id}:{target_id}:{kind_name}");
+            additions.push(DocumentRelation {
+                id: format!("coverage_{}", &sha256_hex(key.as_bytes())[..16]),
+                position: fragarach_ir::DocumentPosition::NonEffective,
+                kind,
+                source_id: source_id.clone(),
+                target_id: target_id.clone(),
+                source_clauses: vec!["決定".to_owned()],
+                target_clauses: vec!["採用方式".to_owned()],
+                scope: plan.scope.clone(),
+                valid_from: plan.time.valid_from.clone(),
+                valid_to: plan.time.valid_to.clone(),
+                evidence: references.clone(),
+            });
+        }
+    }
+
     relations.extend(additions);
     relations.sort_by(|left, right| left.id.cmp(&right.id));
+}
+
+fn incompatible_claim_evidence_scored(
+    source_id: &str,
+    target_id: &str,
+    claims: &[Claim],
+) -> Option<(usize, Vec<fragarach_ir::EvidenceReference>)> {
+    claim_pair_evidence_scored(source_id, target_id, claims, |left, right| {
+        crate::predicate_is_single_valued(&left.predicate)
+            && left
+                .predicate
+                .trim()
+                .eq_ignore_ascii_case(right.predicate.trim())
+            && !crate::claim_objects_equivalent(left, right)
+            && relation_subjects_overlap(&left.subject, &right.subject)
+    })
+}
+
+fn corroborating_claim_evidence(
+    source_id: &str,
+    target_id: &str,
+    claims: &[Claim],
+) -> Option<Vec<fragarach_ir::EvidenceReference>> {
+    claim_pair_evidence_scored(source_id, target_id, claims, |left, right| {
+        crate::claim_objects_equivalent(left, right)
+            && left
+                .object
+                .as_str()
+                .is_some_and(|value| value.trim().chars().count() >= 2)
+            && relation_subjects_overlap(&left.subject, &right.subject)
+    })
+    .map(|(_, references)| references)
+}
+
+fn claim_pair_evidence_scored<F>(
+    source_id: &str,
+    target_id: &str,
+    claims: &[Claim],
+    matches: F,
+) -> Option<(usize, Vec<fragarach_ir::EvidenceReference>)>
+where
+    F: Fn(&Claim, &Claim) -> bool,
+{
+    let mut best = None;
+    for left in claims.iter().filter(|claim| {
+        claim
+            .evidence
+            .iter()
+            .any(|reference| reference.source_id == source_id)
+    }) {
+        for right in claims.iter().filter(|claim| {
+            claim
+                .evidence
+                .iter()
+                .any(|reference| reference.source_id == target_id)
+        }) {
+            if !matches(left, right) {
+                continue;
+            }
+            let mut references = left
+                .evidence
+                .iter()
+                .filter(|reference| reference.source_id == source_id)
+                .chain(
+                    right
+                        .evidence
+                        .iter()
+                        .filter(|reference| reference.source_id == target_id),
+                )
+                .cloned()
+                .collect::<Vec<_>>();
+            references.dedup_by(|left, right| {
+                left.source_id == right.source_id && left.evidence_id == right.evidence_id
+            });
+            if references.is_empty() {
+                continue;
+            }
+            let score = left
+                .subject
+                .trim()
+                .chars()
+                .count()
+                .min(right.subject.trim().chars().count());
+            if best
+                .as_ref()
+                .is_none_or(|(best_score, _): &(usize, Vec<_>)| score > *best_score)
+            {
+                best = Some((score, references));
+            }
+        }
+    }
+    best
+}
+
+fn proposed_technical_change_topic<'a>(
+    source_id: &str,
+    evidence: &'a [PromptEvidence],
+) -> Option<(&'a PromptEvidence, String)> {
+    evidence
+        .iter()
+        .filter(|item| {
+            item.source_id == source_id
+                && item
+                    .heading_path
+                    .iter()
+                    .any(|heading| heading.contains("検討目的"))
+        })
+        .filter_map(|item| {
+            let (topic, _) = item.text.split_once("の次期改訂")?;
+            let topic = topic.trim();
+            (topic.chars().count() >= 6).then_some((item, topic.to_owned()))
+        })
+        .min_by_key(|(_, topic)| topic.chars().count())
+}
+
+fn matching_decision_plan_evidence(
+    decision_source_id: &str,
+    plan_source_id: &str,
+    evidence: &[PromptEvidence],
+) -> Option<Vec<fragarach_ir::EvidenceReference>> {
+    let decision_items = evidence.iter().filter(|item| {
+        item.source_id == decision_source_id
+            && item
+                .heading_path
+                .iter()
+                .any(|heading| heading.contains("決定"))
+            && (item.text.contains("正式採用") || item.text.contains("正式な実施方式"))
+    });
+    let plan_items = evidence.iter().filter(|item| {
+        item.source_id == plan_source_id
+            && item
+                .heading_path
+                .iter()
+                .any(|heading| heading.contains("採用方式"))
+            && item.text.contains("実施方式")
+    });
+    let mut candidates = decision_items
+        .flat_map(|decision| {
+            let decision_phrases = quoted_phrases(&decision.text);
+            plan_items.clone().filter_map(move |plan| {
+                let shares_decision = quoted_phrases(&plan.text)
+                    .iter()
+                    .any(|phrase| decision_phrases.contains(phrase));
+                shares_decision.then_some((decision, plan))
+            })
+        })
+        .collect::<Vec<_>>();
+    candidates
+        .sort_by_key(|(decision, plan)| decision.text.chars().count() + plan.text.chars().count());
+    let (decision, plan) = candidates.first()?;
+    Some(vec![
+        fragarach_ir::EvidenceReference {
+            source_id: decision.source_id.clone(),
+            evidence_id: decision.evidence_id.clone(),
+        },
+        fragarach_ir::EvidenceReference {
+            source_id: plan.source_id.clone(),
+            evidence_id: plan.evidence_id.clone(),
+        },
+    ])
+}
+
+fn quoted_phrases(text: &str) -> Vec<String> {
+    let mut phrases = Vec::new();
+    let mut current = None;
+    for (index, character) in text.char_indices() {
+        if character == '「' {
+            current = Some(index + character.len_utf8());
+        } else if character == '」'
+            && let Some(start) = current.take()
+        {
+            let phrase = text[start..index].trim();
+            if phrase.chars().count() >= 4 && !phrases.iter().any(|item| item == phrase) {
+                phrases.push(phrase.to_owned());
+            }
+        }
+    }
+    phrases
 }
 
 fn relation_clauses_overlap(left: &DocumentRelation, right: &DocumentRelation) -> bool {
@@ -2399,7 +2853,7 @@ fn build_decision_packets(
     relations: &[DocumentRelation],
     evidence: &[PromptEvidence],
 ) -> Vec<DecisionPacket> {
-    relations
+    let packets = relations
         .iter()
         .map(|relation| {
             let endpoint_evidence = select_relation_evidence(relation, evidence);
@@ -2422,19 +2876,28 @@ fn build_decision_packets(
                     references.push(reference);
                 }
             }
-            let (source_role, target_role) = match relation.position {
-                fragarach_ir::DocumentPosition::Dominates => {
-                    (PacketMaterialRole::Governing, PacketMaterialRole::Excluded)
+            let (source_role, target_role) = match relation.kind {
+                fragarach_ir::RelationKind::Approves
+                | fragarach_ir::RelationKind::RecordsExecutionOf => {
+                    (PacketMaterialRole::Verifier, PacketMaterialRole::Governing)
                 }
-                fragarach_ir::DocumentPosition::Conditional => {
-                    (PacketMaterialRole::Governing, PacketMaterialRole::Governing)
+                fragarach_ir::RelationKind::ImplementsDecision => {
+                    (PacketMaterialRole::Governing, PacketMaterialRole::Verifier)
                 }
-                fragarach_ir::DocumentPosition::NonEffective => {
-                    (PacketMaterialRole::Excluded, PacketMaterialRole::Governing)
-                }
-                fragarach_ir::DocumentPosition::Unresolved => {
-                    (PacketMaterialRole::Contender, PacketMaterialRole::Contender)
-                }
+                _ => match relation.position {
+                    fragarach_ir::DocumentPosition::Dominates => {
+                        (PacketMaterialRole::Governing, PacketMaterialRole::Excluded)
+                    }
+                    fragarach_ir::DocumentPosition::Conditional => {
+                        (PacketMaterialRole::Governing, PacketMaterialRole::Governing)
+                    }
+                    fragarach_ir::DocumentPosition::NonEffective => {
+                        (PacketMaterialRole::Excluded, PacketMaterialRole::Governing)
+                    }
+                    fragarach_ir::DocumentPosition::Unresolved => {
+                        (PacketMaterialRole::Contender, PacketMaterialRole::Contender)
+                    }
+                },
             };
             let mut materials = vec![
                 PacketMaterial {
@@ -2475,7 +2938,43 @@ fn build_decision_packets(
                 materials,
             }
         })
-        .collect()
+        .collect::<Vec<_>>();
+    let mut merged: Vec<DecisionPacket> = Vec::new();
+    for packet in packets {
+        let compatible = merged.iter_mut().find(|candidate| {
+            candidate.materials.len() == packet.materials.len()
+                && packet.materials.iter().all(|material| {
+                    candidate.materials.iter().any(|candidate_material| {
+                        candidate_material.source_id == material.source_id
+                            && candidate_material.role == material.role
+                    })
+                })
+        });
+        let Some(existing) = compatible else {
+            merged.push(packet);
+            continue;
+        };
+        let PacketPurpose::Decision { relation_ids } = &mut existing.purpose;
+        let PacketPurpose::Decision {
+            relation_ids: incoming_relation_ids,
+        } = packet.purpose;
+        relation_ids.extend(incoming_relation_ids);
+        relation_ids.sort();
+        relation_ids.dedup();
+        for material in packet.materials {
+            let existing_material = existing
+                .materials
+                .iter_mut()
+                .find(|candidate| {
+                    candidate.source_id == material.source_id && candidate.role == material.role
+                })
+                .expect("compatible Packet material must exist");
+            existing_material.evidence_ids.extend(material.evidence_ids);
+            existing_material.evidence_ids.sort();
+            existing_material.evidence_ids.dedup();
+        }
+    }
+    merged
 }
 
 fn render_decision_packet(
@@ -2714,6 +3213,15 @@ fn relation_evidence_score(relation: &DocumentRelation, item: &PromptEvidence) -
             "矛盾",
         ],
         "approves" => &["承認", "決定", "採用", "施行", "対象"],
+        "implements_decision" => &[
+            "決定",
+            "計画",
+            "採用",
+            "不採用",
+            "実施方式",
+            "実施対象",
+            "採否",
+        ],
         "records_execution_of" => &["決定", "承認", "実施", "実行", "適用", "完了", "記録"],
         "amends" => &["改訂", "修正", "変更", "条", "節"],
         "proposes_change_to" => &["提案", "未署名", "署名", "変更", "義務", "適用"],
@@ -3133,7 +3641,8 @@ mod tests {
     };
     use fragarach_ir::{
         ApplicabilityScope, Claim, DocumentPosition, DocumentRelation, DocumentRole,
-        EvidenceReference, IntentRequirements, PacketMaterialRole, RelationKind, UsageIntent,
+        EvidenceReference, IntentRequirements, PacketMaterialRole, PacketPurpose, RelationKind,
+        UsageIntent,
     };
     use fragarach_llm::PromptEvidence;
 
@@ -3149,6 +3658,31 @@ mod tests {
             valid_from: None,
             valid_to: None,
             text: index.to_string(),
+        }
+    }
+
+    fn grounded_claim(
+        source_id: &str,
+        evidence_id: &str,
+        subject: &str,
+        predicate: &str,
+        object: serde_json::Value,
+    ) -> Claim {
+        Claim {
+            id: format!("claim-{source_id}-{evidence_id}"),
+            subject: subject.to_owned(),
+            predicate: predicate.to_owned(),
+            object,
+            condition: None,
+            valid_from: None,
+            valid_to: None,
+            authority: None,
+            status: None,
+            confidence: 1.0,
+            evidence: vec![EvidenceReference {
+                source_id: source_id.to_owned(),
+                evidence_id: evidence_id.to_owned(),
+            }],
         }
     }
 
@@ -3324,6 +3858,54 @@ mod tests {
     }
 
     #[test]
+    fn compatible_decision_relations_share_one_four_attribute_packet() {
+        let items = vec![evidence("minutes", 0), evidence("plan", 0)];
+        let relation =
+            |id: &str, kind: RelationKind, source: &str, target: &str| DocumentRelation {
+                id: id.to_owned(),
+                position: DocumentPosition::NonEffective,
+                kind,
+                source_id: source.to_owned(),
+                target_id: target.to_owned(),
+                source_clauses: Vec::new(),
+                target_clauses: Vec::new(),
+                scope: ApplicabilityScope::default(),
+                valid_from: None,
+                valid_to: None,
+                evidence: Vec::new(),
+            };
+        let relations = vec![
+            relation("approval", RelationKind::Approves, "minutes", "plan"),
+            relation(
+                "implementation",
+                RelationKind::ImplementsDecision,
+                "plan",
+                "minutes",
+            ),
+        ];
+
+        let packets = build_decision_packets("planning", &relations, &items);
+
+        assert_eq!(packets.len(), 1);
+        let PacketPurpose::Decision { relation_ids } = &packets[0].purpose;
+        assert_eq!(relation_ids, &["approval", "implementation"]);
+        assert!(packets[0].materials.iter().any(|material| {
+            material.source_id == "minutes" && material.role == PacketMaterialRole::Verifier
+        }));
+        assert!(packets[0].materials.iter().any(|material| {
+            material.source_id == "plan" && material.role == PacketMaterialRole::Governing
+        }));
+        assert_eq!(
+            serde_json::to_value(&packets[0])
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .len(),
+            4
+        );
+    }
+
+    #[test]
     fn position_dossier_prefers_decision_fact_chunks_over_repeated_filler() {
         let mut fact = evidence("policy", 0);
         fact.heading_path = vec!["判断に用いる基準".to_owned()];
@@ -3411,6 +3993,193 @@ mod tests {
 
         assert_eq!(analysis_profile.role, fragarach_ir::DocumentRole::Analysis);
         assert_eq!(decision_profile.role, fragarach_ir::DocumentRole::Record);
+    }
+
+    #[test]
+    fn approved_plan_and_matching_minutes_complete_both_decision_relations() {
+        let mut minutes_metadata = evidence("minutes", 0);
+        minutes_metadata.text =
+            "---\ndocument_type: decision_minutes\napproved: true\nofficial_record: true\n---"
+                .to_owned();
+        let mut minutes_fact = evidence("minutes", 1);
+        minutes_fact.heading_path = vec!["決定".to_owned()];
+        minutes_fact.text =
+            "『段階導入』ではなく「代表案件から段階的に導入する」を正式採用した。".to_owned();
+        let mut plan_metadata = evidence("plan", 0);
+        plan_metadata.text =
+            "---\ndocument_type: implementation_plan\napproved: true\n---".to_owned();
+        let mut plan_fact = evidence("plan", 1);
+        plan_fact.heading_path = vec!["採用方式".to_owned()];
+        plan_fact.text = "実施方式は「代表案件から段階的に導入する」とする。".to_owned();
+        let mut minutes =
+            fallback_document_profile("minutes", &[minutes_metadata.clone(), minutes_fact.clone()])
+                .unwrap();
+        minutes.role = DocumentRole::Record;
+        minutes.force.approved = true;
+        minutes.official_record = Some(true);
+        let mut plan =
+            fallback_document_profile("plan", &[plan_metadata.clone(), plan_fact.clone()]).unwrap();
+        plan.role = DocumentRole::Instruction;
+        plan.force.approved = true;
+        let mut relations = Vec::new();
+
+        complete_relation_family_coverage(
+            &mut relations,
+            &[minutes, plan],
+            &[],
+            &[minutes_metadata, minutes_fact, plan_metadata, plan_fact],
+        );
+
+        assert_eq!(relations.len(), 2);
+        assert!(relations.iter().any(|relation| {
+            relation.kind == RelationKind::Approves
+                && relation.source_id == "minutes"
+                && relation.target_id == "plan"
+        }));
+        assert!(relations.iter().any(|relation| {
+            relation.kind == RelationKind::ImplementsDecision
+                && relation.source_id == "plan"
+                && relation.target_id == "minutes"
+        }));
+    }
+
+    #[test]
+    fn unapproved_technical_draft_links_to_unique_specification_topic() {
+        let mut draft_metadata = evidence("draft", 0);
+        draft_metadata.text =
+            "---\ndocument_type: technical_draft\napproved: false\n---".to_owned();
+        let mut draft_topic = evidence("draft", 1);
+        draft_topic.heading_path = vec!["検討目的".to_owned()];
+        draft_topic.text =
+            "検査装置の設定変更反映期限の次期改訂を検討するための草案である。".to_owned();
+        let mut draft_status = evidence("draft", 2);
+        draft_status.heading_path = vec!["承認状態".to_owned()];
+        draft_status.text = "第4版案は未承認であり運用へ適用してはならない。".to_owned();
+        let mut matching_metadata = evidence("matching", 0);
+        matching_metadata.text =
+            "---\ndocument_type: technical_specification\napproved: true\n---".to_owned();
+        let mut matching_fact = evidence("matching", 1);
+        matching_fact.heading_path = vec!["基準値".to_owned()];
+        matching_fact.text = "検査装置の設定変更反映期限の基準値は五営業日以内とする。".to_owned();
+        let mut other_metadata = evidence("other", 0);
+        other_metadata.text =
+            "---\ndocument_type: technical_specification\napproved: true\n---".to_owned();
+        let mut other_fact = evidence("other", 1);
+        other_fact.heading_path = vec!["基準値".to_owned()];
+        other_fact.text = "検査装置の監視データ保持期間は30日とする。".to_owned();
+        let mut draft = fallback_document_profile(
+            "draft",
+            &[
+                draft_metadata.clone(),
+                draft_topic.clone(),
+                draft_status.clone(),
+            ],
+        )
+        .unwrap();
+        draft.role = DocumentRole::Proposal;
+        draft.force.approved = false;
+        let mut matching = fallback_document_profile(
+            "matching",
+            &[matching_metadata.clone(), matching_fact.clone()],
+        )
+        .unwrap();
+        matching.role = DocumentRole::Normative;
+        matching.force.approved = true;
+        let mut other =
+            fallback_document_profile("other", &[other_metadata.clone(), other_fact.clone()])
+                .unwrap();
+        other.role = DocumentRole::Normative;
+        other.force.approved = true;
+        let mut relations = Vec::new();
+
+        complete_relation_family_coverage(
+            &mut relations,
+            &[draft, matching, other],
+            &[],
+            &[
+                draft_metadata,
+                draft_topic,
+                draft_status,
+                matching_metadata,
+                matching_fact,
+                other_metadata,
+                other_fact,
+            ],
+        );
+
+        assert_eq!(relations.len(), 1);
+        assert_eq!(relations[0].kind, RelationKind::ProposesChangeTo);
+        assert_eq!(relations[0].source_id, "draft");
+        assert_eq!(relations[0].target_id, "matching");
+        assert_eq!(relations[0].evidence.len(), 3);
+    }
+
+    #[test]
+    fn stale_faq_chooses_the_most_specific_incompatible_rule() {
+        let mut faq_metadata = evidence("faq", 0);
+        faq_metadata.text = "---\ndocument_type: faq\n---".to_owned();
+        let mut faq_stale = evidence("faq", 1);
+        faq_stale.text = "このFAQは第2版の改訂を反映していない。".to_owned();
+        let mut exact_metadata = evidence("exact", 0);
+        exact_metadata.text = "---\ndocument_type: policy\napproved: true\n---".to_owned();
+        let mut broad_metadata = evidence("broad", 0);
+        broad_metadata.text = "---\ndocument_type: policy\napproved: true\n---".to_owned();
+        let mut faq =
+            fallback_document_profile("faq", &[faq_metadata.clone(), faq_stale.clone()]).unwrap();
+        faq.role = DocumentRole::Communication;
+        let mut exact =
+            fallback_document_profile("exact", std::slice::from_ref(&exact_metadata)).unwrap();
+        exact.role = DocumentRole::Normative;
+        exact.force.approved = true;
+        let mut broad =
+            fallback_document_profile("broad", std::slice::from_ref(&broad_metadata)).unwrap();
+        broad.role = DocumentRole::Normative;
+        broad.force.approved = true;
+        let faq_claim = grounded_claim(
+            "faq",
+            &faq_stale.evidence_id,
+            "輸出管理判定の承認",
+            "requires_approval",
+            serde_json::json!("営業責任者"),
+        );
+        let exact_claim = grounded_claim(
+            "exact",
+            &exact_metadata.evidence_id,
+            "輸出管理判定の承認",
+            "requires_approval",
+            serde_json::json!(["輸出管理責任者", "営業責任者"]),
+        );
+        let broad_claim = grounded_claim(
+            "broad",
+            &broad_metadata.evidence_id,
+            "輸出管理判定",
+            "requires_approval",
+            serde_json::json!("部門長"),
+        );
+        let mut relations = vec![DocumentRelation {
+            id: "wrong".to_owned(),
+            position: DocumentPosition::NonEffective,
+            kind: RelationKind::ConflictsWith,
+            source_id: "faq".to_owned(),
+            target_id: "broad".to_owned(),
+            source_clauses: Vec::new(),
+            target_clauses: Vec::new(),
+            scope: ApplicabilityScope::default(),
+            valid_from: None,
+            valid_to: None,
+            evidence: Vec::new(),
+        }];
+
+        complete_relation_family_coverage(
+            &mut relations,
+            &[faq, exact, broad],
+            &[faq_claim, exact_claim, broad_claim],
+            &[faq_metadata, faq_stale, exact_metadata, broad_metadata],
+        );
+
+        assert_eq!(relations.len(), 1);
+        assert_eq!(relations[0].source_id, "faq");
+        assert_eq!(relations[0].target_id, "exact");
     }
 
     #[test]
@@ -3673,9 +4442,15 @@ mod tests {
         complete_relation_family_coverage(
             &mut relations,
             &[wi.clone(), procedure.clone()],
+            &[],
             &relation_evidence,
         );
-        complete_relation_family_coverage(&mut relations, &[wi, procedure], &relation_evidence);
+        complete_relation_family_coverage(
+            &mut relations,
+            &[wi, procedure],
+            &[],
+            &relation_evidence,
+        );
 
         assert_eq!(relations.len(), 3);
         let applies_to = relations
@@ -3730,6 +4505,7 @@ mod tests {
         complete_relation_family_coverage(
             &mut relations,
             &[proposal, master],
+            &[],
             &[
                 proposal_metadata,
                 proposal_fact.clone(),
@@ -3809,6 +4585,7 @@ mod tests {
         complete_relation_family_coverage(
             &mut relations,
             &[amendment, specification],
+            &[],
             &[amendment_metadata, specification_metadata],
         );
 
@@ -3858,6 +4635,7 @@ mod tests {
         complete_relation_family_coverage(
             &mut relations,
             &[source, target],
+            &[],
             &[source_evidence, target_evidence],
         );
 
@@ -3907,6 +4685,7 @@ mod tests {
         complete_relation_family_coverage(
             &mut relations,
             &[log.clone(), deviation.clone()],
+            &[],
             &relation_evidence,
         );
 
@@ -3933,6 +4712,7 @@ mod tests {
         complete_relation_family_coverage(
             &mut approval_position,
             &[log, deviation],
+            &[],
             &approval_evidence,
         );
         assert_eq!(approval_position.len(), 1);

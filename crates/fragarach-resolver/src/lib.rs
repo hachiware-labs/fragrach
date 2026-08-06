@@ -385,6 +385,10 @@ impl DocumentResolver for RelationGraphResolver {
                     append_relation_path(&mut outcome.decisions[source_index], relation);
                     append_relation_path(&mut outcome.decisions[target_index], relation);
                 }
+                RelationKind::ImplementsDecision => {
+                    append_relation_path(&mut outcome.decisions[source_index], relation);
+                    append_relation_path(&mut outcome.decisions[target_index], relation);
+                }
                 RelationKind::RecordsExecutionOf => {
                     set_decision(
                         &mut outcome.decisions[source_index],

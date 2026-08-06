@@ -599,13 +599,15 @@ fn document_profile_extraction_prompt(
          the evidence decides a position but does not require a more specific relation kind. This is the\n\
          normal kind for non_effective documents. Other kinds are limited to supersedes,\n\
          amends, proposes_change_to, applies_to, exception_to, conflicts_with, approves,\n\
-         records_execution_of, order_of_precedence, and derived_from. Emit a relation only when the evidence\n\
+         implements_decision, records_execution_of, order_of_precedence, and derived_from. Emit a relation only when the evidence\n\
          explicitly supports it. conflicts_with means that two documents state incompatible values or rules;\n\
          emit it even when authority, time, or lifecycle metadata later allows deterministic resolution.\n\
          approves means that an approval or decision record explicitly authorizes the target document, plan,\n\
          or revision. Use non_effective position for the approval record unless the evidence supports another\n\
          position. Do not use records_execution_of for authorization; reserve it for evidence that an approved\n\
-         action was actually performed or applied.\n\
+         action was actually performed or applied. implements_decision means that an approved implementation\n\
+         plan operationalizes a recorded decision; do not use it for a proposal, analysis, or a record of work\n\
+         already performed.\n\
          applies_to means that a scoped instruction operationalizes an identified broader procedure or rule.\n\
          exception_to means that an approved, limited deviation changes the target rule only for its stated\n\
          scope or time. records_execution_of means that a primary record documents actual performance of the\n\
@@ -725,7 +727,7 @@ fn document_profile_response_schema() -> Value {
                     "properties": {
                         "id": {"type": "string", "minLength": 1},
                         "position": {"type": "string", "enum": ["dominates", "conditional", "non_effective", "unresolved"]},
-                        "kind": {"type": "string", "enum": ["operational_position", "supersedes", "amends", "proposes_change_to", "applies_to", "exception_to", "conflicts_with", "approves", "records_execution_of", "order_of_precedence", "derived_from"]},
+                        "kind": {"type": "string", "enum": ["operational_position", "supersedes", "amends", "proposes_change_to", "applies_to", "exception_to", "conflicts_with", "approves", "implements_decision", "records_execution_of", "order_of_precedence", "derived_from"]},
                         "source_id": {"type": "string", "minLength": 1},
                         "target_id": {"type": "string", "minLength": 1},
                         "source_clauses": {"type": "array", "items": {"type": "string"}},
