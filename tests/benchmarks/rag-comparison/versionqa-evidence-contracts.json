@@ -1,0 +1,69 @@
+{
+  "schema_version": "1.0",
+  "description": "Gold evidence-unit annotations for the version-sensitive VersionQA subset. Terms identify evidence; they are never supplied to retrieval or answer generation.",
+  "contracts": {
+    "VQA-041": { "units": [{ "type": "source_span", "source_index": 0, "required_terms": ["maintenance release", "stability", "correctness", "security"] }] },
+    "VQA-042": { "units": [{ "type": "source_span", "source_index": 0, "required_terms": ["assert.partialDeepStrictEqual", "Stability: 1.2", "Release candidate"] }] },
+    "VQA-043": { "units": [{ "type": "source_span", "source_index": 0, "required_terms": ["assert.partialDeepStrictEqual", "Stability: 1.0", "Early development"] }] },
+    "VQA-044": { "units": [{ "type": "document_absence", "source_index": 0, "subject_terms": ["assert.partialDeepStrictEqual"] }] },
+    "VQA-045": { "units": [{ "type": "source_span", "source_index": 0, "required_terms": ["CallTracker", "track if functions were called", "specific number of times"] }] },
+    "VQA-046": { "units": [{ "type": "document_absence", "source_index": 0, "subject_terms": ["CallTracker"] }] },
+    "VQA-047": { "units": [{ "type": "source_span", "source_index": 0, "required_terms": ["assert.CallTracker", "Stability: 1", "Experimental"] }] },
+    "VQA-048": { "units": [{ "type": "source_span", "source_index": 0, "required_terms": ["assert.CallTracker", "Stability: 0", "Deprecated"] }] },
+    "VQA-049": {
+      "status": "disputed",
+      "reason": "The Gold answer claims new Error(message[, options]) and error.cause, but the supplied 17.9.1 source has new Error(message) and no options/cause constructor evidence."
+    },
+    "VQA-050": { "units": [{ "type": "source_span", "source_index": 0, "required_terms": ["new Error(message[, options])", "cause", "error.cause"] }] },
+    "VQA-051": { "units": [{ "type": "source_span", "source_index": 0, "required_terms": ["CERT_NOT_YET_VALID", "notBefore date", "after the current time"] }] },
+    "VQA-052": { "units": [{ "type": "document_absence", "source_index": 0, "subject_terms": ["CERT_NOT_YET_VALID"] }] },
+    "VQA-053": { "units": [{ "type": "source_span", "source_index": 0, "required_terms": ["ERR_ACCESS_DENIED", "resource restricted", "policy"] }] },
+    "VQA-054": { "units": [{ "type": "document_absence", "source_index": 0, "subject_terms": ["ERR_ACCESS_DENIED"] }] },
+    "VQA-055": { "units": [{ "type": "source_span", "source_index": 0, "required_terms": ["ERR_FS_CP_DIR_TO_NON_DIR", "copy a directory", "non-directory", "fs.cp"] }] },
+    "VQA-056": { "units": [{ "type": "source_span", "source_index": 0, "required_terms": ["ERR_HTTP_CONTENT_LENGTH_MISMATCH", "Response body size", "content-length header value"] }] },
+    "VQA-057": { "units": [{ "type": "source_span", "source_index": 0, "required_terms": ["assert.deepEqual(actual", "Stability: 0", "Deprecated"] }] },
+    "VQA-058": { "units": [{ "type": "source_span", "source_index": 0, "required_terms": ["assert.deepEqual(actual", "Stability: 3", "Legacy"] }] },
+    "VQA-059": { "units": [{ "type": "source_span", "source_index": 0, "required_terms": ["require('assert')", "require('assert/strict')"] }] },
+    "VQA-060": { "units": [{ "type": "source_span", "source_index": 0, "required_terms": ["import assert from 'node:assert'", "require('node:assert')"] }] },
+
+    "VQA-081": {
+      "status": "disputed",
+      "reason": "The Gold answer says nothing changed, but the supplied diff removes options/cause and changes new Error(message[, options]) to new Error(message)."
+    },
+    "VQA-082": {
+      "status": "disputed",
+      "reason": "The Gold says OpenSSL Error Codes were introduced in 22.14.0, but the supplied 20.19.0 source already contains the OpenSSL Error Codes section and certificate code entries."
+    },
+    "VQA-083": { "units": [{ "type": "semantic_diff", "before_source_index": 0, "after_source_index": 1, "change_kind": "added", "subject_terms": ["ERR_ACCESS_DENIED"] }] },
+    "VQA-084": {
+      "status": "disputed",
+      "reason": "The Gold assigns the introduction to the 16.20.2 document snapshot, but the supplied source explicitly records added: v16.7.0 for ERR_FS_CP_DIR_TO_NON_DIR."
+    },
+    "VQA-085": { "units": [{ "type": "semantic_diff", "before_source_index": 0, "after_source_index": 1, "change_kind": "added", "subject_terms": ["ERR_HTTP_CONTENT_LENGTH_MISMATCH", "content-length header"] }] },
+    "VQA-086": {
+      "status": "disputed",
+      "reason": "The Gold says CallTracker was introduced in the 14.21.3 document snapshot, but the supplied source explicitly records added: v14.2.0."
+    },
+    "VQA-087": {
+      "status": "disputed",
+      "reason": "The Gold assigns new WeakMap/WeakSet sample code to 22.14.0, but the supplied 20.19.0 source already contains the same revised sample structure. Parallel Node.js release lines make a unique introduction version unsupported."
+    },
+    "VQA-088": {
+      "status": "disputed",
+      "reason": "The Gold says assert.partialDeepStrictEqual was added in the 22.14.0 document snapshot, but the supplied source explicitly records added: v22.13.0."
+    },
+    "VQA-089": { "units": [{ "type": "semantic_diff", "before_source_index": 0, "after_source_index": 1, "change_kind": "added", "subject_terms": ["node:assert", "require('node:assert/strict')"] }] },
+    "VQA-090": { "units": [{ "type": "semantic_diff", "before_source_index": 0, "after_source_index": 1, "change_kind": "modified", "subject_terms": ["assert.partialDeepStrictEqual", "Stability: 1.2"] }] },
+
+    "VQA-091": { "units": [{ "type": "source_span", "source_index": 0, "required_terms": ["Badges", ".text-bg-*", "text is always readable", "light and dark modes"] }] },
+    "VQA-092": { "units": [{ "type": "document_absence", "source_index": 0, "subject_terms": ["color modes"] }] },
+    "VQA-093": { "units": [{ "type": "source_span", "source_index": 0, "required_terms": ["Upgrade Avro", "1.11.4"] }] },
+    "VQA-094": { "units": [{ "type": "source_span", "source_index": 0, "required_terms": ["selector engine", "multiple IDs"] }] },
+    "VQA-095": { "units": [{ "type": "source_span", "source_index": 0, "required_terms": ["color modes", "_variables.scss", "_variables-dark.scss", "automatically import"] }] },
+    "VQA-096": { "units": [{ "type": "source_span", "source_index": 0, "required_terms": ["refactor(accordion)", "merge selectors", "border-radius"] }] },
+    "VQA-097": { "units": [{ "type": "source_span", "source_index": 0, "required_terms": ["terser", "hugo-bin", "eslint", "rollup"] }] },
+    "VQA-098": { "units": [{ "type": "source_span", "source_index": 0, "required_terms": ["SPARK-48710", "Limit NumPy version", ">=1.15,<2"] }] },
+    "VQA-099": { "units": [{ "type": "source_span", "source_index": 0, "required_terms": ["SPARK-44871", "percentile_disc behaviour"] }] },
+    "VQA-100": { "units": [{ "type": "source_span", "source_index": 0, "required_terms": ["SPARK-49836", "broken query", "window/session_window"] }] }
+  }
+}

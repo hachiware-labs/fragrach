@@ -5,8 +5,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { scoreRun } from "./evaluate.mjs";
+import { createStructuredChat } from "./structured-chat.mjs";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
+const repositoryRoot = path.resolve(scriptDirectory, "../../..");
 const defaultCorpusRoot = path.resolve(
   scriptDirectory,
   "../../corpora/aobane-industries-ja",
@@ -15,6 +17,25 @@ const defaultOutputDirectory = path.resolve(
   scriptDirectory,
   "../../../target/benchmarks/rag-comparison",
 );
+
+export const ANSWER_BEHAVIORS = [
+  "answer",
+  "answer_with_provenance",
+  "answer_with_conflict_disclosure",
+  "answer_with_temporal_resolution",
+  "insufficient_information",
+];
+
+export function filterChunksBySourcePrefix(chunks, sourcePrefix) {
+  if (!sourcePrefix) return chunks;
+  const normalized = normalizeSource(`sources/${sourcePrefix}`)
+    .replace(/\/+$/, "") + "/";
+  return chunks.filter((chunk) =>
+    (chunk.evidence ?? []).some((reference) =>
+      normalizeSource(reference.source).startsWith(normalized)
+    )
+  );
+}
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
@@ -33,6 +54,93 @@ function readJsonl(filePath) {
         throw new Error(`${filePath}:${index + 1}: ${error.message}`);
       }
     });
+}
+
+function readOptionalJsonl(filePath) {
+  return fs.existsSync(filePath) ? readJsonl(filePath) : [];
+}
+
+export function readCorpusGold(corpusRoot = defaultCorpusRoot) {
+  const goldRoot = path.join(corpusRoot, "gold");
+  return {
+    answers: readOptionalJsonl(path.join(goldRoot, "answers.jsonl")),
+    conflicts: readOptionalJsonl(path.join(goldRoot, "conflicts.jsonl")),
+    aliases: readOptionalJsonl(path.join(goldRoot, "aliases.jsonl")),
+    versions: readOptionalJsonl(path.join(goldRoot, "versions.jsonl")),
+    duplicates: readOptionalJsonl(path.join(goldRoot, "duplicates.jsonl")),
+  };
+}
+
+export function completeGoldAnswers(questions, answers = []) {
+  const byQuestionId = new Map(
+    answers.map((answer) => [answer.question_id, answer]),
+  );
+  return questions.map((question) =>
+    byQuestionId.get(question.id) ?? {
+      question_id: question.id,
+      intent: question.intent_id,
+      question: question.question,
+      as_of: question.as_of,
+      required_answer_elements: question.expected_answer_elements,
+      prohibited_conclusions: question.forbidden_answer_elements,
+      expected_behavior: question.expected_behavior,
+      gold_evidence: question.required_evidence,
+    },
+  );
+}
+
+export function enrichQuestionsWithConflictGold(
+  questions,
+  answers = [],
+  conflicts = [],
+) {
+  const answersByQuestion = new Map(
+    answers.map((answer) => [answer.question_id, answer]),
+  );
+  return questions.map((question) => {
+    if (question.conflict_evidence) return question;
+    const answer = answersByQuestion.get(question.id);
+    if (
+      question.expected_behavior !== "answer_with_conflict_disclosure" ||
+      !answer?.canonical_citation
+    ) {
+      return question;
+    }
+    const goldEvidence = answer.gold_evidence ?? question.required_evidence ?? [];
+    const evidenceSources = new Set(
+      goldEvidence.map((item) => normalizeSource(item.source)),
+    );
+    const canonicalSource = normalizeSource(answer.canonical_citation);
+    const conflict = conflicts.find((candidate) => {
+      const sources = (candidate.sources ?? []).map(normalizeSource);
+      return (
+        sources.includes(canonicalSource) &&
+        sources.length >= 2 &&
+        sources.every((source) => evidenceSources.has(source))
+      );
+    });
+    if (!conflict) return question;
+    const conflictSources = new Set(
+      conflict.sources.map(normalizeSource),
+    );
+    const canonical = goldEvidence.filter(
+      (item) => normalizeSource(item.source) === canonicalSource,
+    );
+    const conflicting = goldEvidence.filter((item) => {
+      const source = normalizeSource(item.source);
+      return source !== canonicalSource && conflictSources.has(source);
+    });
+    if (canonical.length === 0 || conflicting.length === 0) return question;
+    return {
+      ...question,
+      conflict_evidence: {
+        conflict_id: conflict.conflict_id,
+        resolution: conflict.status,
+        canonical,
+        conflicting,
+      },
+    };
+  });
 }
 
 function writeJsonl(filePath, rows) {
@@ -73,6 +181,9 @@ function createRawChunk(source, section, title, text, index) {
     id: `raw:${source}:${index}`,
     source,
     section: section || title || "本文",
+    title: title || source,
+    body: cleanText,
+    is_metadata: section === "文書メタデータ",
     evidence: [{ source, section: section || title || "本文" }],
     text: [
       `文書: ${title || source}`,
@@ -80,6 +191,77 @@ function createRawChunk(source, section, title, text, index) {
       cleanText,
     ].join("\n"),
   };
+}
+
+function formatRawChunk(chunk, options = {}) {
+  const lines = [];
+  if (options.includeTitle ?? true) lines.push(`文書: ${chunk.title}`);
+  if (options.includeSection ?? true) lines.push(`セクション: ${chunk.section}`);
+  lines.push(chunk.body);
+  return { ...chunk, text: lines.join("\n") };
+}
+
+function groupRawChunks(chunks, options = {}) {
+  const strategy = options.strategy ?? "paragraph";
+  const includeMetadata = options.includeMetadata ?? true;
+  const selected = chunks.filter((chunk) => includeMetadata || !chunk.is_metadata);
+  if (strategy === "paragraph") {
+    return selected.map((chunk) => formatRawChunk(chunk, options));
+  }
+
+  if (!["section", "fixed"].includes(strategy)) {
+    throw new Error(`unknown raw chunk strategy: ${strategy}`);
+  }
+  const maxChars = strategy === "section"
+    ? Number.POSITIVE_INFINITY
+    : options.maxChars;
+  if (strategy === "fixed" && (!Number.isInteger(maxChars) || maxChars < 1)) {
+    throw new Error("fixed raw chunks require a positive maxChars");
+  }
+  const overlapParagraphs = Math.max(0, options.overlapParagraphs ?? 0);
+  const grouped = [];
+  let cursor = 0;
+
+  while (cursor < selected.length) {
+    const first = selected[cursor];
+    const sameSection = [];
+    let sectionEnd = cursor;
+    while (
+      sectionEnd < selected.length &&
+      selected[sectionEnd].source === first.source &&
+      selected[sectionEnd].section === first.section
+    ) {
+      sameSection.push(selected[sectionEnd]);
+      sectionEnd += 1;
+    }
+
+    let windowStart = 0;
+    while (windowStart < sameSection.length) {
+      const window = [];
+      let bodyLength = 0;
+      let windowEnd = windowStart;
+      while (windowEnd < sameSection.length) {
+        const candidate = sameSection[windowEnd];
+        const nextLength = bodyLength + (window.length > 0 ? 2 : 0) + candidate.body.length;
+        if (window.length > 0 && nextLength > maxChars) break;
+        window.push(candidate);
+        bodyLength = nextLength;
+        windowEnd += 1;
+      }
+      const evidence = window.flatMap((chunk) => chunk.evidence);
+      const combined = {
+        ...first,
+        id: `raw:${first.source}:group:${grouped.length}`,
+        body: window.map((chunk) => chunk.body).join("\n\n"),
+        evidence,
+      };
+      grouped.push(formatRawChunk(combined, options));
+      if (windowEnd >= sameSection.length) break;
+      windowStart = Math.max(windowStart + 1, windowEnd - overlapParagraphs);
+    }
+    cursor = sectionEnd;
+  }
+  return grouped;
 }
 
 function parseMarkdown(source, text) {
@@ -177,7 +359,7 @@ function parseText(source, text) {
   return chunks;
 }
 
-export function buildRawChunks(corpusRoot = defaultCorpusRoot) {
+export function buildRawChunks(corpusRoot = defaultCorpusRoot, options = {}) {
   const sourcesRoot = path.join(corpusRoot, "sources");
   const chunks = [];
 
@@ -193,7 +375,7 @@ export function buildRawChunks(corpusRoot = defaultCorpusRoot) {
     );
   }
 
-  return chunks;
+  return groupRawChunks(chunks, options);
 }
 
 function flattenEvidence(evidence) {
@@ -230,7 +412,7 @@ function sourceIdsToEvidence(documentIds, rawChunks) {
   return evidence;
 }
 
-export function buildOracleChunks(expected, rawChunks) {
+export function buildOracleChunks(expected, rawChunks, gold = {}) {
   const chunks = [];
 
   for (const claim of expected.expected_claims ?? []) {
@@ -259,6 +441,7 @@ export function buildOracleChunks(expected, rawChunks) {
         );
     chunks.push({
       id: `oracle:conflict:${conflict.id}`,
+      unit_type: "conflict",
       evidence,
       text: [
         "種別: Conflict",
@@ -343,6 +526,67 @@ export function buildOracleChunks(expected, rawChunks) {
     });
   }
 
+  for (const answer of gold.answers ?? []) {
+    chunks.push({
+      id: `oracle:gold-answer:${answer.question_id}`,
+      evidence: flattenEvidence(answer.gold_evidence),
+      text: [
+        "種別: Gold Claim Bundle",
+        `回答要素: ${(answer.required_answer_elements ?? []).join("、")}`,
+        `期待動作: ${answer.expected_behavior}`,
+        ...(answer.gold_evidence ?? []).flatMap((item) =>
+          (item.content_terms ?? []).map((term) => `根拠語: ${term}`),
+        ),
+      ].join("\n"),
+    });
+  }
+
+  for (const conflict of gold.conflicts ?? []) {
+    chunks.push({
+      id: `oracle:gold-conflict:${conflict.conflict_id}`,
+      unit_type: "conflict",
+      evidence: (conflict.sources ?? []).map((source) =>
+        bestEvidenceForSource(source, conflict.topic, rawChunks),
+      ),
+      text: [
+        "種別: Gold Conflict",
+        `論点: ${conflict.topic}`,
+        `状態: ${conflict.status}`,
+        `優先値: ${conflict.canonical_value}`,
+        `競合値: ${conflict.conflicting_value}`,
+      ].join("\n"),
+    });
+  }
+
+  for (const alias of gold.aliases ?? []) {
+    chunks.push({
+      id: `oracle:gold-alias:${alias.alias_id}`,
+      evidence: [{
+        source: normalizeSource(alias.evidence),
+        section: "本文",
+      }],
+      text: [
+        "種別: Gold Alias",
+        `正式名称: ${alias.canonical}`,
+        `別名: ${(alias.aliases ?? []).join("、")}`,
+        `担当: ${alias.owner}`,
+      ].join("\n"),
+    });
+  }
+
+  for (const version of gold.versions ?? []) {
+    chunks.push({
+      id: `oracle:gold-version:${version.series_id}`,
+      evidence: [bestEvidenceForSource(version.source, version.topic, rawChunks)],
+      text: [
+        "種別: Gold Version Group",
+        `論点: ${version.topic}`,
+        `現行: ${version.current}`,
+        `旧版: ${(version.superseded ?? []).join("、")}`,
+      ].join("\n"),
+    });
+  }
+
   return chunks;
 }
 
@@ -353,11 +597,13 @@ export function buildActualChunks(buildDirectories, options = {}) {
     includeClaims = true,
     includeConflicts = true,
     includeDiagnosticAliases = false,
+    includeRelationDossiers = false,
   } = options;
   const claimsById = new Map();
   const evidenceById = new Map();
   const conflictsById = new Map();
   const diagnosticsById = new Map();
+  const relationDossiers = [];
   const authorityPrecedenceByIntent = new Map();
   const allEvidence = [];
 
@@ -396,6 +642,11 @@ export function buildActualChunks(buildDirectories, options = {}) {
         intent_id: intentId,
       });
     }
+    if (includeRelationDossiers) {
+      for (const dossier of readOptionalJsonl(path.join(buildDirectory, "relation-dossiers.jsonl"))) {
+        relationDossiers.push({ ...dossier, intent_id: dossier.intent_id ?? intentId });
+      }
+    }
   }
 
   const claimEvidence = (claim) =>
@@ -407,6 +658,7 @@ export function buildActualChunks(buildDirectories, options = {}) {
       )
       .filter(Boolean)
       .map((evidence) => ({
+        source_id: evidence.source_id,
         source: normalizeSource(`sources/${evidence.source_path}`),
         section: (evidence.heading_path ?? []).join(" / ") || "本文",
         text: evidence.text,
@@ -459,6 +711,7 @@ export function buildActualChunks(buildDirectories, options = {}) {
         evidence.source_path,
         ...(evidence.source_aliases ?? []),
       ].map((sourcePath) => ({
+        source_id: evidence.source_id,
         source: normalizeSource(`sources/${sourcePath}`),
         section: (evidence.heading_path ?? []).join(" / ") || "本文",
         text: evidence.text,
@@ -544,6 +797,24 @@ export function buildActualChunks(buildDirectories, options = {}) {
         .join("\n"),
     });
   }
+  for (const dossier of relationDossiers) {
+    const cited = (dossier.evidence ?? [])
+      .map((reference) => evidenceById.get(`${dossier.intent_id}/${reference.source_id}/${reference.evidence_id}`))
+      .filter(Boolean);
+    chunks.push({
+      id: `actual:relation-dossier:${dossier.intent_id}/${dossier.id}`,
+      unit_type: dossier.kind === "conflicts_with" ? "conflict" : "relation_dossier",
+      intent_id: dossier.intent_id,
+      evidence: cited.flatMap((item) => [item.source_path, ...(item.source_aliases ?? [])].map((sourcePath) => ({
+        source_id: item.source_id,
+        source: normalizeSource(`sources/${sourcePath}`),
+        section: (item.heading_path ?? []).join(" / ") || "本文",
+        text: item.text,
+      }))),
+      relation: dossier,
+      text: dossier.text,
+    });
+  }
   for (const diagnostic of diagnosticsById.values()) {
     if (diagnostic.code !== "FRG-CST-MISSING-OWNER") continue;
     const cited = (diagnostic.evidence_ids ?? [])
@@ -585,13 +856,13 @@ export function buildActualChunks(buildDirectories, options = {}) {
   return chunks;
 }
 
-export function tokenize(input) {
+export function tokenize(input, options = {}) {
   const normalized = String(input)
     .normalize("NFKC")
     .toLowerCase();
   const tokens = normalized.match(/[a-z0-9_]+/g) ?? [];
   const compact = Array.from(normalized.replace(/[^\p{L}\p{N}]+/gu, ""));
-  for (const size of [2, 3]) {
+  for (const size of options.ngramSizes ?? [2, 3]) {
     for (let index = 0; index <= compact.length - size; index += 1) {
       tokens.push(compact.slice(index, index + size).join(""));
     }
@@ -604,59 +875,73 @@ export class Bm25Index {
     this.documents = documents;
     this.k1 = options.k1 ?? 1.5;
     this.b = options.b ?? 0.75;
-    this.documentTokens = documents.map((document) => tokenize(document.text));
-    this.averageLength =
-      this.documentTokens.reduce((sum, tokens) => sum + tokens.length, 0) /
-      Math.max(this.documentTokens.length, 1);
+    this.tokenizeOptions = { ngramSizes: options.ngramSizes ?? [2, 3] };
+    this.documentLengths = [];
     this.documentFrequency = new Map();
-
-    for (const tokens of this.documentTokens) {
-      for (const token of new Set(tokens)) {
+    this.postings = new Map();
+    let totalLength = 0;
+    for (let documentIndex = 0; documentIndex < documents.length; documentIndex += 1) {
+      const tokens = tokenize(documents[documentIndex].text, this.tokenizeOptions);
+      this.documentLengths.push(tokens.length);
+      totalLength += tokens.length;
+      const frequencies = new Map();
+      for (const token of tokens) {
+        frequencies.set(token, (frequencies.get(token) ?? 0) + 1);
+      }
+      for (const [token, frequency] of frequencies) {
         this.documentFrequency.set(
           token,
           (this.documentFrequency.get(token) ?? 0) + 1,
         );
+        if (!this.postings.has(token)) this.postings.set(token, []);
+        this.postings.get(token).push([documentIndex, frequency]);
       }
     }
+    this.averageLength = totalLength / Math.max(documents.length, 1);
+  }
+
+  withParameters(options = {}) {
+    const index = Object.create(Bm25Index.prototype);
+    Object.assign(index, this, {
+      k1: options.k1 ?? this.k1,
+      b: options.b ?? this.b,
+    });
+    return index;
   }
 
   search(query, limit = 5, filter = null) {
-    const queryTokens = tokenize(query);
+    const queryTokens = tokenize(query, this.tokenizeOptions);
     const queryFrequency = new Map();
     for (const token of queryTokens) {
       queryFrequency.set(token, (queryFrequency.get(token) ?? 0) + 1);
     }
 
-    const scored = this.documents.map((document, documentIndex) => {
-      const tokens = this.documentTokens[documentIndex];
-      const termFrequency = new Map();
-      for (const token of tokens) {
-        termFrequency.set(token, (termFrequency.get(token) ?? 0) + 1);
-      }
-
-      let score = 0;
-      for (const [token, queryCount] of queryFrequency) {
-        const frequency = termFrequency.get(token) ?? 0;
-        if (frequency === 0) continue;
-        const documentsWithToken = this.documentFrequency.get(token) ?? 0;
-        const idf = Math.log(
-          1 +
-            (this.documents.length - documentsWithToken + 0.5) /
-              (documentsWithToken + 0.5),
-        );
+    const scores = new Map();
+    for (const [token, queryCount] of queryFrequency) {
+      const postings = this.postings.get(token) ?? [];
+      const documentsWithToken = this.documentFrequency.get(token) ?? 0;
+      const idf = Math.log(
+        1 +
+          (this.documents.length - documentsWithToken + 0.5) /
+            (documentsWithToken + 0.5),
+      );
+      for (const [documentIndex, frequency] of postings) {
         const denominator =
           frequency +
           this.k1 *
             (1 -
               this.b +
-              this.b * (tokens.length / Math.max(this.averageLength, 1)));
-        score +=
+              this.b * (this.documentLengths[documentIndex] / Math.max(this.averageLength, 1)));
+        const contribution =
           idf *
           ((frequency * (this.k1 + 1)) / denominator) *
           Math.min(queryCount, 3);
+        scores.set(documentIndex, (scores.get(documentIndex) ?? 0) + contribution);
       }
-      score *= document.score_boost ?? 1;
-      return { document, score };
+    }
+    const scored = [...scores].map(([documentIndex, score]) => {
+      const document = this.documents[documentIndex];
+      return { document, score: score * (document.score_boost ?? 1) };
     });
 
     return scored
@@ -673,13 +958,15 @@ export class Bm25Index {
   }
 }
 
-export function retrieve(index, questions, topK) {
+export function retrieve(index, questions, topK, options = {}) {
   const byQuestion = new Map();
   const supportsIntentFilter = index.documents.some(
     (document) => document.intent_id,
   );
   for (const question of questions) {
-    const query = `${question.question}\n対象時点: ${question.as_of}`;
+    const query = options.queryMode === "question-only"
+      ? question.question
+      : `${question.question}\n対象時点: ${question.as_of}`;
     byQuestion.set(
       question.id,
       index.search(
@@ -749,6 +1036,121 @@ function evidenceMatches(left, right) {
   );
 }
 
+function evidenceLocationMatches(left, right) {
+  const leftSection = String(left.section ?? "").trim();
+  const rightSection = String(right.section ?? "").trim();
+  return (
+    normalizeSource(left.source) === normalizeSource(right.source) &&
+    (!left.section ||
+      leftSection === rightSection ||
+      rightSection.endsWith(` / ${leftSection}`) ||
+      leftSection.endsWith(` / ${rightSection}`))
+  );
+}
+
+function requiredEvidenceForRelevance(question) {
+  const conflictEvidence = question.conflict_evidence ?? {};
+  return [
+    ...(question.required_evidence ?? []),
+    ...(conflictEvidence.canonical ?? []),
+    ...(conflictEvidence.conflicting ?? []),
+  ];
+}
+
+function documentMatchesEvidence(document, requiredEvidence) {
+  const candidates = expandedEvidence([{ document }]);
+  return requiredEvidence.some((required) =>
+    candidates.some((candidate) => evidenceMatches(required, candidate))
+  );
+}
+
+function documentMatchesConflictSides(document, conflictEvidence) {
+  const references = document.evidence ?? [];
+  const sideMatches = (side) =>
+    side.every((required) =>
+      references.some((candidate) =>
+        evidenceLocationMatches(required, candidate)
+      )
+    );
+  return (
+    document.unit_type === "conflict" &&
+    sideMatches(conflictEvidence.canonical ?? []) &&
+    sideMatches(conflictEvidence.conflicting ?? [])
+  );
+}
+
+function evidenceRank(required, retrieved) {
+  for (const [index, item] of retrieved.entries()) {
+    if (item.document.unit_type === "conflict") continue;
+    const candidates = expandedEvidence([item]);
+    if (candidates.some((candidate) => evidenceMatches(required, candidate))) {
+      return index + 1;
+    }
+  }
+  return null;
+}
+
+function conflictRetrievalMetrics(
+  question,
+  retrieved,
+  supportsConflictUnits,
+) {
+  const conflictEvidence = question.conflict_evidence;
+  if (!conflictEvidence) {
+    return {
+      conflict_recall: null,
+      conflict_complete: null,
+      conflict_unit_recall: null,
+      resolution_accuracy: null,
+    };
+  }
+  const actual = expandedEvidence(retrieved);
+  const expected = [
+    ...(conflictEvidence.canonical ?? []),
+    ...(conflictEvidence.conflicting ?? []),
+  ];
+  const matched = expected.filter((required) =>
+    actual.some((candidate) => evidenceMatches(required, candidate))
+  ).length;
+  const conflictRecall = expected.length === 0 ? null : matched / expected.length;
+  const canonicalRanks = (conflictEvidence.canonical ?? [])
+    .map((required) => evidenceRank(required, retrieved))
+    .filter((rank) => rank !== null);
+  const conflictingRanks = (conflictEvidence.conflicting ?? [])
+    .map((required) => evidenceRank(required, retrieved))
+    .filter((rank) => rank !== null);
+  const resolutionAccuracy =
+    canonicalRanks.length === (conflictEvidence.canonical ?? []).length &&
+      conflictingRanks.length === (conflictEvidence.conflicting ?? []).length
+      ? Math.min(...canonicalRanks) < Math.min(...conflictingRanks)
+        ? 1
+        : 0
+      : null;
+  return {
+    conflict_recall: conflictRecall,
+    conflict_complete: conflictRecall === 1 ? 1 : 0,
+    conflict_unit_recall: supportsConflictUnits
+      ? retrieved.some((item) =>
+          documentMatchesConflictSides(item.document, conflictEvidence)
+        )
+        ? 1
+        : 0
+      : null,
+    resolution_accuracy: resolutionAccuracy,
+  };
+}
+
+function distractorRate(question, retrieved) {
+  if (retrieved.length === 0) return null;
+  const requiredEvidence = requiredEvidenceForRelevance(question);
+  const relevant = retrieved.filter((item) =>
+    documentMatchesEvidence(item.document, requiredEvidence) ||
+    (question.conflict_evidence &&
+      documentMatchesConflictSides(item.document, question.conflict_evidence))
+  ).length;
+  return 1 - relevant / retrieved.length;
+}
+
 export function retrievalRecall(question, retrieved) {
   if (question.required_evidence.length === 0) return 1;
   const actual = expandedEvidence(retrieved);
@@ -756,6 +1158,339 @@ export function retrievalRecall(question, retrieved) {
     actual.some((candidate) => evidenceMatches(required, candidate)),
   ).length;
   return matched / question.required_evidence.length;
+}
+
+export function retrievalPrecision(question, retrieved) {
+  const required = question.required_evidence ?? [];
+  if (required.length === 0) return null;
+  if (retrieved.length === 0) return 0;
+  const unmatched = new Set(required.map((_, index) => index));
+  let novelRelevantUnits = 0;
+  for (const item of retrieved) {
+    const candidates = expandedEvidence([item]);
+    const matched = [...unmatched].filter((index) =>
+      candidates.some((candidate) => evidenceMatches(required[index], candidate))
+    );
+    if (matched.length === 0) continue;
+    novelRelevantUnits += 1;
+    for (const index of matched) unmatched.delete(index);
+  }
+  return novelRelevantUnits / retrieved.length;
+}
+
+function mean(values) {
+  if (values.length === 0) return null;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function retrievalBreakdown(details, field, retrievalKs) {
+  const groups = new Map();
+  for (const detail of details) {
+    const values = field === "tags" ? detail.tags : [detail[field]];
+    for (const value of values) {
+      if (!groups.has(value)) groups.set(value, []);
+      groups.get(value).push(detail);
+    }
+  }
+  return Object.fromEntries(
+    [...groups.entries()]
+      .sort(([left], [right]) => left.localeCompare(right, "ja"))
+      .map(([value, group]) => [
+        value,
+        {
+          questions: group.length,
+          recall_at_k: Object.fromEntries(
+            retrievalKs.map((topK) => [
+              String(topK),
+              mean(group.map((item) => item.recall_at_k[String(topK)])),
+            ]),
+          ),
+          complete_at_k: Object.fromEntries(
+            retrievalKs.map((topK) => [
+              String(topK),
+              mean(group.map((item) => item.complete_at_k[String(topK)])),
+            ]),
+          ),
+          precision_at_k: Object.fromEntries(
+            retrievalKs.map((topK) => [
+              String(topK),
+              mean(
+                group
+                  .map((item) => item.precision_at_k[String(topK)])
+                  .filter((value) => value !== null && value !== undefined),
+              ),
+            ]),
+          ),
+        },
+      ]),
+  );
+}
+
+export function scoreRetrieval(
+  questions,
+  retrievalByQuestion,
+  retrievalKs = [5, 10, 20],
+  options = {},
+) {
+  const supportsConflictUnits = options.supportsConflictUnits ??
+    [...retrievalByQuestion.values()].some((items) =>
+      items.some((item) => item.document.unit_type === "conflict")
+    );
+  const details = questions.map((question) => {
+    const retrieved = retrievalByQuestion.get(question.id) ?? [];
+    const qualityAtK = Object.fromEntries(
+      retrievalKs.map((topK) => {
+        const selected = retrieved.slice(0, topK);
+        return [
+          String(topK),
+          {
+            recall: retrievalRecall(question, selected),
+            precision: retrievalPrecision(question, selected),
+            distractor_rate: distractorRate(question, selected),
+            ...conflictRetrievalMetrics(
+              question,
+              selected,
+              supportsConflictUnits,
+            ),
+          },
+        ];
+      }),
+    );
+    return {
+      question_id: question.id,
+      cohort: question.id.startsWith("M-") ? "added84" : "legacy16",
+      intent_id: question.intent_id,
+      tags: question.tags,
+      recall_at_k: Object.fromEntries(
+        retrievalKs.map((topK) => [
+          String(topK),
+          qualityAtK[String(topK)].recall,
+        ]),
+      ),
+      complete_at_k: Object.fromEntries(
+        retrievalKs.map((topK) => [
+          String(topK),
+          qualityAtK[String(topK)].recall === 1 ? 1 : 0,
+        ]),
+      ),
+      precision_at_k: Object.fromEntries(
+        retrievalKs.map((topK) => [
+          String(topK),
+          qualityAtK[String(topK)].precision,
+        ]),
+      ),
+      distractor_rate_at_k: Object.fromEntries(
+        retrievalKs.map((topK) => [
+          String(topK),
+          qualityAtK[String(topK)].distractor_rate,
+        ]),
+      ),
+      conflict_recall_at_k: Object.fromEntries(
+        retrievalKs.map((topK) => [
+          String(topK),
+          qualityAtK[String(topK)].conflict_recall,
+        ]),
+      ),
+      conflict_complete_at_k: Object.fromEntries(
+        retrievalKs.map((topK) => [
+          String(topK),
+          qualityAtK[String(topK)].conflict_complete,
+        ]),
+      ),
+      conflict_unit_recall_at_k: Object.fromEntries(
+        retrievalKs.map((topK) => [
+          String(topK),
+          qualityAtK[String(topK)].conflict_unit_recall,
+        ]),
+      ),
+      resolution_accuracy_at_k: Object.fromEntries(
+        retrievalKs.map((topK) => [
+          String(topK),
+          qualityAtK[String(topK)].resolution_accuracy,
+        ]),
+      ),
+      retrieved: expandedEvidence(retrieved),
+    };
+  });
+  const conflictDetails = details.filter((item) =>
+    questions.find((question) => question.id === item.question_id)
+      ?.conflict_evidence
+  );
+  const nonNullMean = (values) =>
+    mean(values.filter((value) => value !== null && value !== undefined));
+  return {
+    questions: questions.length,
+    conflict_questions: conflictDetails.length,
+    supports_conflict_units: supportsConflictUnits,
+    recall_at_k: Object.fromEntries(
+      retrievalKs.map((topK) => [
+        String(topK),
+        mean(details.map((item) => item.recall_at_k[String(topK)])),
+      ]),
+    ),
+    complete_at_k: Object.fromEntries(
+      retrievalKs.map((topK) => [
+        String(topK),
+        mean(details.map((item) => item.complete_at_k[String(topK)])),
+      ]),
+    ),
+    precision_at_k: Object.fromEntries(
+      retrievalKs.map((topK) => [
+        String(topK),
+        nonNullMean(
+          details.map((item) => item.precision_at_k[String(topK)]),
+        ),
+      ]),
+    ),
+    distractor_rate_at_k: Object.fromEntries(
+      retrievalKs.map((topK) => [
+        String(topK),
+        nonNullMean(
+          details.map((item) => item.distractor_rate_at_k[String(topK)]),
+        ),
+      ]),
+    ),
+    conflict_recall_at_k: Object.fromEntries(
+      retrievalKs.map((topK) => [
+        String(topK),
+        nonNullMean(
+          conflictDetails.map(
+            (item) => item.conflict_recall_at_k[String(topK)],
+          ),
+        ),
+      ]),
+    ),
+    conflict_complete_rate_at_k: Object.fromEntries(
+      retrievalKs.map((topK) => [
+        String(topK),
+        nonNullMean(
+          conflictDetails.map(
+            (item) => item.conflict_complete_at_k[String(topK)],
+          ),
+        ),
+      ]),
+    ),
+    conflict_unit_recall_at_k: Object.fromEntries(
+      retrievalKs.map((topK) => [
+        String(topK),
+        supportsConflictUnits
+          ? nonNullMean(
+              conflictDetails.map(
+                (item) => item.conflict_unit_recall_at_k[String(topK)],
+              ),
+            )
+          : null,
+      ]),
+    ),
+    resolution_accuracy_at_k: Object.fromEntries(
+      retrievalKs.map((topK) => [
+        String(topK),
+        nonNullMean(
+          conflictDetails.map(
+            (item) => item.resolution_accuracy_at_k[String(topK)],
+          ),
+        ),
+      ]),
+    ),
+    resolution_evaluable_questions_at_k: Object.fromEntries(
+      retrievalKs.map((topK) => [
+        String(topK),
+        conflictDetails.filter(
+          (item) =>
+            item.resolution_accuracy_at_k[String(topK)] !== null,
+        ).length,
+      ]),
+    ),
+    resolution_coverage_at_k: Object.fromEntries(
+      retrievalKs.map((topK) => {
+        const evaluable = conflictDetails.filter(
+          (item) =>
+            item.resolution_accuracy_at_k[String(topK)] !== null,
+        ).length;
+        return [
+          String(topK),
+          conflictDetails.length === 0 ? null : evaluable / conflictDetails.length,
+        ];
+      }),
+    ),
+    by_cohort: retrievalBreakdown(details, "cohort", retrievalKs),
+    by_intent: retrievalBreakdown(details, "intent_id", retrievalKs),
+    by_tag: retrievalBreakdown(details, "tags", retrievalKs),
+    questions_detail: details,
+  };
+}
+
+function coverageBreakdown(details, field) {
+  const groups = new Map();
+  for (const detail of details) {
+    const values = field === "tags" ? detail.tags : [detail[field]];
+    for (const value of values) {
+      if (!groups.has(value)) groups.set(value, []);
+      groups.get(value).push(detail);
+    }
+  }
+  return Object.fromEntries(
+    [...groups.entries()]
+      .sort(([left], [right]) => left.localeCompare(right, "ja"))
+      .map(([value, group]) => [
+        value,
+        {
+          questions: group.length,
+          compile_coverage: mean(group.map((item) => item.compile_coverage)),
+        },
+      ]),
+  );
+}
+
+export function scoreCompileCoverage(questions, documents) {
+  const details = questions.map((question) => {
+    const matched = [];
+    const missing = [];
+    for (const required of question.required_evidence) {
+      const present = documents.some((document) =>
+        (document.evidence ?? []).some((candidate) =>
+          evidenceMatches(required, {
+            ...candidate,
+            retrieval_text: document.text,
+          })
+        )
+      );
+      (present ? matched : missing).push(required);
+    }
+    return {
+      question_id: question.id,
+      cohort: question.id.startsWith("M-") ? "added84" : "legacy16",
+      intent_id: question.intent_id,
+      tags: question.tags,
+      compile_coverage: question.required_evidence.length === 0
+        ? 1
+        : matched.length / question.required_evidence.length,
+      matched_required_evidence: matched,
+      missing_required_evidence: missing,
+    };
+  });
+  return {
+    questions: questions.length,
+    compile_coverage: mean(details.map((item) => item.compile_coverage)),
+    by_cohort: coverageBreakdown(details, "cohort"),
+    by_intent: coverageBreakdown(details, "intent_id"),
+    by_tag: coverageBreakdown(details, "tags"),
+    questions_detail: details,
+  };
+}
+
+function runRetrievalOnly(index, questions, retrievalKs, options = {}) {
+  const maximumK = Math.max(...retrievalKs);
+  return scoreRetrieval(
+    questions,
+    retrieve(index, questions, maximumK, options),
+    retrievalKs,
+    {
+      supportsConflictUnits: index.documents.some(
+        (document) => document.unit_type === "conflict",
+      ),
+    },
+  );
 }
 
 function answerSchema(questionIds) {
@@ -773,12 +1508,7 @@ function answerSchema(questionIds) {
             answer: { type: "string" },
             behavior: {
               type: "string",
-              enum: [
-                "answer",
-                "answer_with_conflict_disclosure",
-                "answer_with_temporal_resolution",
-                "insufficient_information",
-              ],
+              enum: ANSWER_BEHAVIORS,
             },
             citation_ids: {
               type: "array",
@@ -807,12 +1537,7 @@ function judgeSchema(questionIds) {
             question_id: { type: "string", enum: questionIds },
             behavior: {
               type: "string",
-              enum: [
-                "answer",
-                "answer_with_conflict_disclosure",
-                "answer_with_temporal_resolution",
-                "insufficient_information",
-              ],
+              enum: ANSWER_BEHAVIORS,
             },
             satisfied_answer_elements: {
               type: "array",
@@ -833,46 +1558,6 @@ function judgeSchema(questionIds) {
       },
     },
     required: ["results"],
-  };
-}
-
-async function ollamaChat(endpoint, model, prompt, schema, seed) {
-  const startedAt = performance.now();
-  const response = await fetch(`${endpoint.replace(/\/$/, "")}/api/chat`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      model,
-      messages: [{ role: "user", content: prompt }],
-      stream: false,
-      think: false,
-      format: schema,
-      options: {
-        temperature: 0,
-        seed,
-        num_ctx: 65536,
-        num_predict: 4096,
-      },
-    }),
-    signal: AbortSignal.timeout(15 * 60 * 1000),
-  });
-  if (!response.ok) {
-    throw new Error(`Ollama ${response.status}: ${await response.text()}`);
-  }
-  const body = await response.json();
-  let content;
-  try {
-    content = JSON.parse(body.message.content);
-  } catch (error) {
-    throw new Error(`Ollama returned invalid JSON: ${error.message}`);
-  }
-  return {
-    content,
-    usage: {
-      promptTokens: body.prompt_eval_count ?? null,
-      outputTokens: body.eval_count ?? null,
-      durationMs: performance.now() - startedAt,
-    },
   };
 }
 
@@ -1093,18 +1778,52 @@ function normalizeDossierPlan(content) {
   return { slots: slots.slice(0, 5) };
 }
 
+export function augmentDossierPlan(question, plan) {
+  const slots = [...plan.slots];
+  const searchable = () => slots
+    .map((slot) => `${slot.id} ${slot.label} ${slot.search_query}`)
+    .join(" ");
+  const add = (slot, coveredBy) => {
+    if (!coveredBy.test(searchable()) && slots.length < 5) slots.push(slot);
+  };
+  if (/どの規則|どの版|現行.*規則|規則.*適用/.test(question.question)) {
+    add(
+      {
+        id: "applicable_version",
+        label: "適用する現行版と旧版の失効",
+        search_query: `${question.question} 第2版 第1版 置き換える 適用期間 終了 supersedes`,
+      },
+      /現行版|旧版|第2版|失効|supersed/,
+    );
+  }
+  if (/FAQ/.test(question.question) && /食い違|矛盾|不一致|競合/.test(question.question)) {
+    add(
+      {
+        id: "stale_guidance",
+        label: "FAQの旧案内と最新版の未反映状態",
+        search_query: `${question.question} FAQ 旧案内 第2版 反映していない`,
+      },
+      /未反映|反映していない|旧案内|stale/,
+    );
+    add(
+      {
+        id: "canonical_requirement",
+        label: "正式規程の現行要件",
+        search_query: `${question.question} 正式規程 現行規則 第2版 要件`,
+      },
+      /現行要件|現行規則|正式規程.*要件|canonical/,
+    );
+  }
+  return { slots };
+}
+
 function dossierSlotSchema(plan) {
   return {
     type: "object",
     properties: {
       behavior: {
         type: "string",
-        enum: [
-          "answer",
-          "answer_with_conflict_disclosure",
-          "answer_with_temporal_resolution",
-          "insufficient_information",
-        ],
+        enum: ANSWER_BEHAVIORS,
       },
       slots: {
         type: "array",
@@ -1153,7 +1872,9 @@ function dossierSlotPrompt(question, plan, dossier) {
 - status=missingは資料が不足する場合。推測しない。
 - citation_idsにはvalueを支える角括弧内IDを入れる。
 - 正式文書、時点、権威順位を優先する。
-- Conflictが質問の対象に関係する場合は隠さず、behaviorをanswer_with_conflict_disclosureにする。
+- 根拠と出典を示して答えられる場合はbehaviorをanswer_with_provenanceにする。
+- Conflictが未解決、または質問が文書間の食い違いを明示的に尋ねる場合は、behaviorをanswer_with_conflict_disclosureにする。
+- 解決済みの過去版や古い案内が取得資料に含まれるだけなら、behaviorをanswer_with_conflict_disclosureにしない。
 
 対象時点: ${question.as_of}
 質問: ${question.question}
@@ -1174,9 +1895,13 @@ function normalizeDossierSlots(content, plan, question, retrieved) {
   );
   const slots = plan.slots.map((planned) => {
     const raw = rawById.get(planned.id) ?? {};
-    const citationIds = [...new Set((raw.citation_ids ?? [])
+    const citationIds = expandRelationCitationIds(
+      [...new Set((raw.citation_ids ?? [])
       .map((id) => String(id).trim().replace(/^\[|\]$/g, ""))
-      .filter((id) => lookup.has(id)))];
+      .filter((id) => lookup.has(id)))],
+      question,
+      retrieved,
+    );
     const requestedStatus = ["supported", "unresolved", "missing"].includes(
       raw.status,
     )
@@ -1197,23 +1922,37 @@ function normalizeDossierSlots(content, plan, question, retrieved) {
   });
   const hasUnresolved = slots.some((slot) => slot.status === "unresolved");
   const hasMissing = slots.some((slot) => slot.status === "missing");
-  const allowedBehaviors = new Set([
-    "answer",
-    "answer_with_conflict_disclosure",
-    "answer_with_temporal_resolution",
-    "insufficient_information",
-  ]);
+  const allowedBehaviors = new Set(ANSWER_BEHAVIORS);
+  const asksAboutConflict = /食い違|矛盾|不一致|競合/.test(question.question);
+  const requestedBehavior = allowedBehaviors.has(content.behavior)
+    ? content.behavior
+    : "answer_with_provenance";
   return {
-    behavior: hasUnresolved
+    behavior: hasUnresolved || asksAboutConflict
       ? "answer_with_conflict_disclosure"
       : hasMissing
         ? "insufficient_information"
-        : allowedBehaviors.has(content.behavior)
-          ? content.behavior
-          : "answer",
+        : requestedBehavior === "answer_with_conflict_disclosure"
+          ? "answer_with_provenance"
+          : requestedBehavior,
     slots,
     guardrails: (content.guardrails ?? []).map(String),
   };
+}
+
+export function expandRelationCitationIds(citationIds, question, retrieved) {
+  const expanded = new Set(citationIds);
+  for (const citationId of citationIds) {
+    const match = citationId.match(/-C(\d+)-E\d+$/);
+    if (!match) continue;
+    const contextIndex = Number.parseInt(match[1], 10) - 1;
+    const document = retrieved[contextIndex]?.document;
+    if (!document?.relation) continue;
+    for (const [evidenceIndex] of (document.evidence ?? []).entries()) {
+      expanded.add(evidenceId(question.id, contextIndex, evidenceIndex));
+    }
+  }
+  return [...expanded];
 }
 
 function dossierAnswerPrompt(question, structured) {
@@ -1408,12 +2147,20 @@ async function runPipeline({
   pipelineMode = "direct",
   questions,
   topK,
-  endpoint,
-  model,
+  answerChatConfig,
+  judgeChatConfig,
   seed,
+  queryMode = "question-as-of",
 }) {
+  const answerClient = await createStructuredChat(answerChatConfig);
+  const sameProvider = JSON.stringify(answerChatConfig) === JSON.stringify(judgeChatConfig);
+  const judgeClient = sameProvider
+    ? answerClient
+    : await createStructuredChat(judgeChatConfig);
   const retrievalByQuestion =
-    pipelineMode === "direct" ? retrieve(index, questions, topK) : new Map();
+    pipelineMode === "direct"
+      ? retrieve(index, questions, topK, { queryMode })
+      : new Map();
   if (pipelineMode === "direct") {
     const retrievalMacro = questions.reduce(
       (sum, question) =>
@@ -1429,7 +2176,7 @@ async function runPipeline({
     );
   }
   console.log(
-    `${label}: generating ${questions.length} isolated ${pipelineMode === "dossier" ? "dossiers and " : ""}answers with ${model}`,
+    `${label}: generating ${questions.length} isolated ${pipelineMode === "dossier" ? "dossiers and " : ""}answers with ${answerClient.label}`,
   );
   const answerByQuestion = new Map();
   const answerUsageByQuestion = new Map();
@@ -1438,15 +2185,16 @@ async function runPipeline({
   for (const [questionIndex, question] of questions.entries()) {
     if (pipelineMode === "dossier") {
       const stageUsages = [];
-      const planResponse = await ollamaChat(
-        endpoint,
-        model,
+      const planResponse = await answerClient.chat(
         dossierPlanPrompt(question),
         dossierPlanSchema(),
         seed + questionIndex,
       );
       stageUsages.push(planResponse.usage);
-      const plan = normalizeDossierPlan(planResponse.content);
+      const plan = augmentDossierPlan(
+        question,
+        normalizeDossierPlan(planResponse.content),
+      );
       let dossier = assembleDossierRetrieval(
         index,
         fallbackIndex,
@@ -1454,9 +2202,7 @@ async function runPipeline({
         plan,
         topK,
       );
-      let slotResponse = await ollamaChat(
-        endpoint,
-        model,
+      let slotResponse = await answerClient.chat(
         dossierSlotPrompt(question, plan, dossier),
         dossierSlotSchema(plan),
         seed + 200 + questionIndex,
@@ -1480,9 +2226,7 @@ async function runPipeline({
           topK,
           missingSlotIds,
         );
-        slotResponse = await ollamaChat(
-          endpoint,
-          model,
+        slotResponse = await answerClient.chat(
           dossierSlotPrompt(question, plan, dossier),
           dossierSlotSchema(plan),
           seed + 400 + questionIndex,
@@ -1495,9 +2239,7 @@ async function runPipeline({
           dossier.retrieved,
         );
       }
-      const answerResponse = await ollamaChat(
-        endpoint,
-        model,
+      const answerResponse = await answerClient.chat(
         dossierAnswerPrompt(question, structured),
         answerSchema([question.id]),
         seed + 600 + questionIndex,
@@ -1537,9 +2279,7 @@ async function runPipeline({
       const oneQuestionRetrieval = new Map([
         [question.id, retrievalByQuestion.get(question.id) ?? []],
       ]);
-      const answerResponse = await ollamaChat(
-        endpoint,
-        model,
+      const answerResponse = await answerClient.chat(
         answerPrompt([question], oneQuestionRetrieval),
         answerSchema([question.id]),
         seed + questionIndex,
@@ -1576,16 +2316,16 @@ async function runPipeline({
     );
   }
 
-  console.log(`${label}: judging answers with isolated blind prompts`);
+  console.log(
+    `${label}: judging answers with isolated blind prompts using ${judgeClient.label}`,
+  );
   const judgmentByQuestion = new Map();
   const judgeUsages = [];
   for (const [questionIndex, question] of questions.entries()) {
     const oneAnswer = new Map([
       [question.id, answerByQuestion.get(question.id)],
     ]);
-    const judgeResponse = await ollamaChat(
-      endpoint,
-      model,
+    const judgeResponse = await judgeClient.chat(
       judgePrompt([question], oneAnswer),
       judgeSchema([question.id]),
       seed + 1000 + questionIndex,
@@ -1637,9 +2377,19 @@ async function runPipeline({
     };
   });
 
-  return {
+  const outcome = {
     results,
     retrievalMacro,
+    retrievalQuality: scoreRetrieval(
+      questions,
+      retrievalByQuestion,
+      [topK],
+      {
+        supportsConflictUnits: index.documents.some(
+          (document) => document.unit_type === "conflict",
+        ),
+      },
+    ),
     answerUsage: {
       promptTokens: answerUsages.every(
         (usage) => usage.promptTokens !== null,
@@ -1679,6 +2429,9 @@ async function runPipeline({
       ),
     },
   };
+  await answerClient.close();
+  if (judgeClient !== answerClient) await judgeClient.close();
+  return outcome;
 }
 
 function parseArguments(argv) {
@@ -1687,13 +2440,27 @@ function parseArguments(argv) {
     outputDirectory: defaultOutputDirectory,
     endpoint: "http://localhost:11434",
     model: "gemma4:latest",
+    answerProvider: "ollama",
+    answerEndpoint: null,
+    answerModel: null,
+    answerReasoningEffort: "low",
+    judgeProvider: null,
+    judgeEndpoint: null,
+    judgeModel: null,
+    judgeReasoningEffort: "low",
+    codexCommand: "codex",
     topK: 5,
     seed: 42,
     compiledBuilds: [],
     actualOnly: false,
+    rawOnly: false,
+    rawProfile: "current",
+    rawSourcePrefix: "",
     actualVariant: "baseline",
     intents: [],
     questionIds: [],
+    retrievalOnly: false,
+    retrievalKs: [5, 10, 20],
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -1706,6 +2473,24 @@ function parseArguments(argv) {
       options.endpoint = argv[++index];
     } else if (argument === "--model") {
       options.model = argv[++index];
+    } else if (argument === "--answer-provider") {
+      options.answerProvider = argv[++index];
+    } else if (argument === "--answer-endpoint") {
+      options.answerEndpoint = argv[++index];
+    } else if (argument === "--answer-model") {
+      options.answerModel = argv[++index];
+    } else if (argument === "--answer-reasoning-effort") {
+      options.answerReasoningEffort = argv[++index];
+    } else if (argument === "--judge-provider") {
+      options.judgeProvider = argv[++index];
+    } else if (argument === "--judge-endpoint") {
+      options.judgeEndpoint = argv[++index];
+    } else if (argument === "--judge-model") {
+      options.judgeModel = argv[++index];
+    } else if (argument === "--judge-reasoning-effort") {
+      options.judgeReasoningEffort = argv[++index];
+    } else if (argument === "--codex-command") {
+      options.codexCommand = argv[++index];
     } else if (argument === "--top-k") {
       options.topK = Number.parseInt(argv[++index], 10);
     } else if (argument === "--seed") {
@@ -1714,12 +2499,24 @@ function parseArguments(argv) {
       options.compiledBuilds.push(path.resolve(argv[++index]));
     } else if (argument === "--actual-only") {
       options.actualOnly = true;
+    } else if (argument === "--raw-only") {
+      options.rawOnly = true;
+    } else if (argument === "--raw-profile") {
+      options.rawProfile = argv[++index];
+    } else if (argument === "--raw-source-prefix") {
+      options.rawSourcePrefix = argv[++index];
     } else if (argument === "--actual-variant") {
       options.actualVariant = argv[++index];
     } else if (argument === "--intent") {
       options.intents.push(argv[++index]);
     } else if (argument === "--question") {
       options.questionIds.push(argv[++index]);
+    } else if (argument === "--retrieval-only") {
+      options.retrievalOnly = true;
+    } else if (argument === "--retrieval-k") {
+      options.retrievalKs = argv[++index]
+        .split(",")
+        .map((value) => Number.parseInt(value, 10));
     } else if (argument === "--help" || argument === "-h") {
       options.help = true;
     } else {
@@ -1738,16 +2535,42 @@ Options:
   --output <path>    Result directory
   --endpoint <url>   Ollama endpoint
   --model <name>     Ollama chat model (default: gemma4:latest)
+  --answer-provider <name>
+                     Answer provider: ollama or codex-app-server
+  --answer-endpoint <url>
+                     Answer Ollama endpoint; defaults to --endpoint
+  --answer-model <name>
+                     Answer model; defaults to --model
+  --answer-reasoning-effort <level>
+                     Codex answer reasoning effort (default: low)
+  --judge-provider <name>
+                     Judge provider; defaults to the answer provider
+  --judge-endpoint <url>
+                     Judge Ollama endpoint; defaults to --endpoint
+  --judge-model <name>
+                     Judge model; defaults to the selected answer model
+  --judge-reasoning-effort <level>
+                     Codex judge reasoning effort (default: low)
+  --codex-command <path>
+                     Codex executable for App Server (default: codex)
   --top-k <number>   Retrieved chunks per question (default: 5)
   --seed <number>    Reproducibility seed (default: 42)
   --compiled-build <path>
                      Add an actual Fragrach Knowledge Build (repeatable)
   --actual-only      Skip Raw and Oracle answer generation
+  --raw-only         Evaluate only Raw RAG
+  --raw-profile <name>
+                     Raw profile: current or tuned-sparse-v1
+  --raw-source-prefix <path>
+                     Limit Raw documents, for example manufacturing/product-design
   --actual-variant <name>
                      Actual adapter: baseline, aliases, evidence-fallback,
                      fallback-no-authority, fallback-evidence-only, or dossier
   --intent <id>      Evaluate only this Intent (repeatable)
   --question <id>    Evaluate only this question ID (repeatable)
+  --retrieval-only   Skip answer generation and judging
+  --retrieval-k <csv>
+                     Retrieval cutoffs (default: 5,10,20)
   --help             Show this help`);
 }
 
@@ -1755,6 +2578,29 @@ export function filterQuestionsByIntent(questions, intents) {
   if (intents.length === 0) return questions;
   const selected = new Set(intents);
   return questions.filter((question) => selected.has(question.intent_id));
+}
+
+export function structuredChatConfigs(options) {
+  const answer = {
+    provider: options.answerProvider,
+    endpoint: options.answerEndpoint ?? options.endpoint,
+    model: options.answerModel ?? options.model,
+    reasoningEffort: options.answerReasoningEffort,
+    command: options.codexCommand,
+    cwd: repositoryRoot,
+  };
+  const judgeProvider = options.judgeProvider ?? answer.provider;
+  const judge = {
+    provider: judgeProvider,
+    endpoint: options.judgeEndpoint ?? options.endpoint,
+    model:
+      options.judgeModel ??
+      (judgeProvider === answer.provider ? answer.model : options.model),
+    reasoningEffort: options.judgeReasoningEffort,
+    command: options.codexCommand,
+    cwd: repositoryRoot,
+  };
+  return { answer, judge };
 }
 
 export function actualVariantOptions(name) {
@@ -1777,12 +2623,41 @@ export function actualVariantOptions(name) {
       includeClaims: false,
       includeDiagnosticAliases: true,
     },
-    dossier: {},
+    dossier: {
+      includeRelationDossiers: true,
+    },
   };
   if (!(name in variants)) {
     throw new Error(`unknown --actual-variant: ${name}`);
   }
   return variants[name];
+}
+
+export function rawProfileOptions(name) {
+  const profiles = {
+    current: {
+      chunking: {},
+      index: {},
+      queryMode: "question-as-of",
+    },
+    "tuned-sparse-v1": {
+      chunking: {
+        strategy: "fixed",
+        maxChars: 1024,
+        overlapParagraphs: 0,
+      },
+      index: {
+        ngramSizes: [2],
+        k1: 1.8,
+        b: 0.75,
+      },
+      queryMode: "question-only",
+    },
+  };
+  if (!(name in profiles)) {
+    throw new Error(`unknown --raw-profile: ${name}`);
+  }
+  return profiles[name];
 }
 
 async function main() {
@@ -1794,6 +2669,23 @@ async function main() {
   if (!Number.isInteger(options.topK) || options.topK < 1) {
     throw new Error("--top-k must be a positive integer");
   }
+  if (
+    options.retrievalKs.length === 0 ||
+    options.retrievalKs.some((value) => !Number.isInteger(value) || value < 1)
+  ) {
+    throw new Error("--retrieval-k must contain positive integers");
+  }
+  options.retrievalKs = [...new Set(options.retrievalKs)].sort(
+    (left, right) => left - right,
+  );
+  if (options.retrievalOnly && options.actualVariant === "dossier") {
+    throw new Error(
+      "--retrieval-only cannot evaluate dossier because its slot planner uses an LLM",
+    );
+  }
+  if (options.actualOnly && options.rawOnly) {
+    throw new Error("--actual-only and --raw-only cannot be combined");
+  }
 
   fs.mkdirSync(options.outputDirectory, { recursive: true });
   const intentQuestions = filterQuestionsByIntent(
@@ -1803,23 +2695,42 @@ async function main() {
     options.intents,
   );
   const selectedQuestionIds = new Set(options.questionIds);
-  const questions = options.questionIds.length === 0
+  const selectedQuestions = options.questionIds.length === 0
     ? intentQuestions
     : intentQuestions.filter((question) =>
         selectedQuestionIds.has(question.id),
       );
-  if (questions.length === 0) {
+  if (selectedQuestions.length === 0) {
     throw new Error(
       "--intent/--question did not match any evaluation questions",
     );
   }
-  const expected = readJson(
-    path.join(options.corpusRoot, "ground-truth/expected.json"),
+  const gold = readCorpusGold(options.corpusRoot);
+  const questions = enrichQuestionsWithConflictGold(
+    selectedQuestions,
+    gold.answers,
+    gold.conflicts,
   );
-  const rawChunks = buildRawChunks(options.corpusRoot);
-  const oracleChunks = buildOracleChunks(expected, rawChunks);
+  const oracleGold = {
+    ...gold,
+    answers: completeGoldAnswers(questions, gold.answers),
+  };
+  const rawProfile = rawProfileOptions(options.rawProfile);
+  const rawChunks = options.actualOnly
+    ? []
+    : filterChunksBySourcePrefix(
+        buildRawChunks(options.corpusRoot, rawProfile.chunking),
+        options.rawSourcePrefix,
+      );
+  const oracleChunks = options.actualOnly || options.rawOnly
+    ? []
+    : buildOracleChunks(
+        readJson(path.join(options.corpusRoot, "ground-truth/expected.json")),
+        rawChunks,
+        oracleGold,
+      );
   const actualChunks =
-    options.compiledBuilds.length > 0
+    !options.rawOnly && options.compiledBuilds.length > 0
       ? buildActualChunks(
           options.compiledBuilds,
           actualVariantOptions(options.actualVariant),
@@ -1842,21 +2753,131 @@ async function main() {
       (actualChunks.length > 0 ? `, actual=${actualChunks.length}` : ""),
   );
 
+  if (options.retrievalOnly) {
+    const runs = {};
+    if (!options.actualOnly) {
+      runs["raw-rag"] = runRetrievalOnly(
+        new Bm25Index(rawChunks, rawProfile.index),
+        questions,
+        options.retrievalKs,
+        { queryMode: rawProfile.queryMode },
+      );
+    }
+    if (!options.actualOnly && !options.rawOnly) {
+      runs["oracle-compiled"] = runRetrievalOnly(
+        new Bm25Index(oracleChunks),
+        questions,
+        options.retrievalKs,
+      );
+    }
+    if (actualChunks.length > 0) {
+      runs["actual-compiled"] = runRetrievalOnly(
+        new Bm25Index(actualChunks),
+        questions,
+        options.retrievalKs,
+      );
+    }
+    const report = {
+      schema_version: "0.3",
+      experiment: "retrieval-only",
+      raw_profile: options.rawProfile,
+      raw_source_prefix: options.rawSourcePrefix || null,
+      retrieval_k: options.retrievalKs,
+      actual_variant: options.actualVariant,
+      intent_filter: options.intents,
+      question_filter: options.questionIds,
+      generated_at: new Date().toISOString(),
+      corpus_gold: Object.fromEntries(
+        Object.entries(gold).map(([key, rows]) => [key, rows.length]),
+      ),
+      indexes: {
+        raw_chunks: rawChunks.length,
+        oracle_knowledge_units: oracleChunks.length,
+        actual_knowledge_units: actualChunks.length,
+      },
+      compile_coverage: {
+        ...(!options.actualOnly
+          ? {
+              raw_rag: scoreCompileCoverage(questions, rawChunks),
+              ...(!options.rawOnly
+                ? { oracle_compiled: scoreCompileCoverage(questions, oracleChunks) }
+                : {}),
+            }
+          : {}),
+        ...(actualChunks.length > 0
+          ? { actual_compiled: scoreCompileCoverage(questions, actualChunks) }
+          : {}),
+      },
+      runs,
+    };
+    const reportPath = path.join(
+      options.outputDirectory,
+      "retrieval-report.json",
+    );
+    fs.writeFileSync(
+      reportPath,
+      `${JSON.stringify(report, null, 2)}\n`,
+      "utf8",
+    );
+    console.log("\nRetrieval result");
+    for (const [label, run] of Object.entries(runs)) {
+      const coverage = report.compile_coverage[
+        label.replaceAll("-", "_")
+      ];
+      console.log(
+        `${label}: ${options.retrievalKs
+          .map(
+            (topK) =>
+              `R@${topK} ${(run.recall_at_k[String(topK)] * 100).toFixed(1)}%`,
+          )
+          .join(", ")}, Compile Coverage ${(coverage.compile_coverage * 100).toFixed(1)}%`,
+      );
+      const percentage = (value) =>
+        value === null || value === undefined
+          ? "n/a"
+          : `${(value * 100).toFixed(1)}%`;
+      console.log(
+        `${label}: ${options.retrievalKs
+          .map((topK) => {
+            const key = String(topK);
+            return [
+              `D@${topK} ${percentage(run.distractor_rate_at_k[key])}`,
+              `Conflict R@${topK} ${percentage(run.conflict_recall_at_k[key])}`,
+              `Conflict Unit@${topK} ${percentage(run.conflict_unit_recall_at_k[key])}`,
+              `Resolution@${topK} ${percentage(run.resolution_accuracy_at_k[key])}`,
+              `(coverage ${percentage(run.resolution_coverage_at_k[key])})`,
+            ].join(", ");
+          })
+          .join("; ")}`,
+      );
+    }
+    console.log(`Report: ${reportPath}`);
+    return;
+  }
+
+  const chatConfigs = structuredChatConfigs(options);
+  const pipelineChat = {
+    answerChatConfig: chatConfigs.answer,
+    judgeChatConfig: chatConfigs.judge,
+  };
   const raw = options.actualOnly
     ? null
     : await runPipeline({
         label: "raw-rag",
-        index: new Bm25Index(rawChunks),
+        index: new Bm25Index(rawChunks, rawProfile.index),
+        queryMode: rawProfile.queryMode,
         questions,
         ...options,
+        ...pipelineChat,
       });
-  const oracle = options.actualOnly
+  const oracle = options.actualOnly || options.rawOnly
     ? null
     : await runPipeline({
         label: "oracle-compiled",
         index: new Bm25Index(oracleChunks),
         questions,
         ...options,
+        ...pipelineChat,
       });
   const actual =
     actualChunks.length > 0
@@ -1871,6 +2892,7 @@ async function main() {
             options.actualVariant === "dossier" ? "dossier" : "direct",
           questions,
           ...options,
+          ...pipelineChat,
         })
       : null;
 
@@ -1889,12 +2911,26 @@ async function main() {
   }
 
   const report = {
-    schema_version: "0.1",
-    experiment: options.actualOnly ? "actual-only" : "upper-bound",
+    schema_version: "0.3",
+    experiment: options.actualOnly
+      ? "actual-only"
+      : options.rawOnly
+        ? "raw-only"
+        : "upper-bound",
     model: options.model,
+    answer_provider: chatConfigs.answer.provider,
+    answer_model: chatConfigs.answer.model,
+    answer_reasoning_effort: chatConfigs.answer.reasoningEffort,
+    answer_seed_supported: chatConfigs.answer.provider === "ollama",
+    judge_provider: chatConfigs.judge.provider,
+    judge_model: chatConfigs.judge.model,
+    judge_reasoning_effort: chatConfigs.judge.reasoningEffort,
+    judge_seed_supported: chatConfigs.judge.provider === "ollama",
     top_k: options.topK,
     seed: options.seed,
     actual_variant: options.actualVariant,
+    raw_profile: options.rawProfile,
+    raw_source_prefix: options.rawSourcePrefix || null,
     intent_filter: options.intents,
     question_filter: options.questionIds,
     generated_at: new Date().toISOString(),
@@ -1903,10 +2939,24 @@ async function main() {
       oracle_knowledge_units: oracleChunks.length,
       actual_knowledge_units: actualChunks.length,
     },
+    compile_coverage: {
+      ...(raw ? { raw_rag: scoreCompileCoverage(questions, rawChunks) } : {}),
+      ...(oracle
+        ? { oracle_compiled: scoreCompileCoverage(questions, oracleChunks) }
+        : {}),
+      ...(actual
+        ? { actual_compiled: scoreCompileCoverage(questions, actualChunks) }
+        : {}),
+    },
     retrieval_only: {
       ...(raw ? { raw_rag: raw.retrievalMacro } : {}),
       ...(oracle ? { oracle_compiled: oracle.retrievalMacro } : {}),
       ...(actual ? { actual_compiled: actual.retrievalMacro } : {}),
+    },
+    retrieval_quality: {
+      ...(raw ? { raw_rag: raw.retrievalQuality } : {}),
+      ...(oracle ? { oracle_compiled: oracle.retrievalQuality } : {}),
+      ...(actual ? { actual_compiled: actual.retrievalQuality } : {}),
     },
     runs: {
       ...(raw

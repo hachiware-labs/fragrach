@@ -1,0 +1,17 @@
+id: technical_spec
+goal: 基本仕様、部分追補、未承認草案、試験記録を区別して現行の技術条件を示す
+users:
+  - engineer
+  - quality-assurance-member
+  - reviewer
+tasks:
+  - 追補を該当条項だけへ適用する
+  - 草案を現行仕様として扱わない
+  - 試験記録と規範文書を区別する
+questions:
+  - 対象製品の現行基準値は何か
+  - 草案や試験記録は仕様を変更するか
+requirements:
+  evidence_required: true
+  temporal_scope_required: true
+  unresolved_conflicts_allowed: true

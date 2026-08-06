@@ -1,0 +1,24 @@
+people:
+  - id: person-a
+    name: 青木みな
+    role: 製品責任者
+    organization: 製品開発部
+  - id: person-b
+    name: 石原蓮
+    role: 主任技師
+    organization: 製品開発部
+  - id: person-c
+    name: 上野直
+    role: 品質保証部長
+    organization: 品質保証部
+  - id: person-d
+    name: 江藤凛
+    role: 情報管理責任者
+    organization: 情報システム部
+  - id: person-e
+    name: 大庭航
+    role: 運用マネージャー
+    organization: 情報システム部
+notes:
+  - すべて架空の人物である。
+  - 個人名ではなく役割に定義された責任を正本とする。

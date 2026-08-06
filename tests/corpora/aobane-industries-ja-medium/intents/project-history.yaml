@@ -1,0 +1,19 @@
+id: project-history
+goal: 提案、正式決定、採用理由、実装結果を時系列と根拠付きで説明する
+users:
+  - project-leader
+  - architect
+  - reviewer
+tasks:
+  - 初期提案と正式決定を区別する
+  - 決定理由を議事録とADRから確認する
+  - 実装記録で採用状態を確認する
+questions:
+  - プロジェクトで正式採用された選択肢は何か
+  - 初期提案のうち採用されなかった選択肢は何か
+  - 正式決定の理由は何か
+  - 実装記録はどの決定が実装済みであることを示すか
+requirements:
+  evidence_required: true
+  temporal_scope_required: true
+  unresolved_conflicts_allowed: true

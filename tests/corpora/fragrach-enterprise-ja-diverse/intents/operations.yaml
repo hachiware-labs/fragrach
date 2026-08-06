@@ -1,0 +1,17 @@
+id: operations
+goal: 全社手順、現場指示、期限付き例外、実施記録から対象別の運用を判断する
+users:
+  - operator
+  - site-manager
+  - auditor
+tasks:
+  - 例外の対象と期間を確認する
+  - 対象外へ例外を拡張しない
+  - 実施記録を新しい規則として扱わない
+questions:
+  - 指定日時と対象に適用する手順は何か
+  - 例外対象外の運用は変わるか
+requirements:
+  evidence_required: true
+  temporal_scope_required: true
+  unresolved_conflicts_allowed: false

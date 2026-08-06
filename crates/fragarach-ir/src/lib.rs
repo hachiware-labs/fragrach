@@ -148,6 +148,269 @@ pub struct EvidenceReference {
     pub evidence_id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentRole {
+    Normative,
+    Instruction,
+    Record,
+    Analysis,
+    Proposal,
+    Communication,
+    Reference,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ForceLevel {
+    Mandatory,
+    Recommended,
+    Informational,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ForceProfile {
+    pub level: ForceLevel,
+    #[serde(default)]
+    pub authority_rank: i32,
+    #[serde(default)]
+    pub approved: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ApplicabilityScope {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub jurisdictions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sites: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub products: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assets: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub persons: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub projects: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lots: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contracts: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ScopeDimension {
+    Jurisdiction,
+    Entity,
+    Site,
+    Product,
+    Asset,
+    Person,
+    Project,
+    Lot,
+    Contract,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScopeAlias {
+    pub dimension: ScopeDimension,
+    pub canonical: String,
+    pub aliases: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClauseAlias {
+    pub canonical: String,
+    pub aliases: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NormalizationCatalog {
+    #[serde(default)]
+    pub scope_aliases: Vec<ScopeAlias>,
+    #[serde(default)]
+    pub clause_aliases: Vec<ClauseAlias>,
+    #[serde(default)]
+    pub universal_values: Vec<String>,
+    #[serde(default)]
+    pub empty_values: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TemporalProfile {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub valid_from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub valid_to: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DocumentProfile {
+    pub source_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    pub role: DocumentRole,
+    pub force: ForceProfile,
+    #[serde(default)]
+    pub scope: ApplicabilityScope,
+    #[serde(default)]
+    pub time: TemporalProfile,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub official_record: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<EvidenceReference>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RelationKind {
+    OperationalPosition,
+    Supersedes,
+    Amends,
+    AppliesTo,
+    ExceptionTo,
+    ConflictsWith,
+    RecordsExecutionOf,
+    OrderOfPrecedence,
+    DerivedFrom,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentPosition {
+    Dominates,
+    Conditional,
+    NonEffective,
+    #[default]
+    Unresolved,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DocumentRelation {
+    pub id: String,
+    #[serde(default)]
+    pub position: DocumentPosition,
+    pub kind: RelationKind,
+    pub source_id: String,
+    pub target_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_clauses: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub target_clauses: Vec<String>,
+    #[serde(default)]
+    pub scope: ApplicabilityScope,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub valid_from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub valid_to: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<EvidenceReference>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RelationDossier {
+    pub id: String,
+    pub intent_id: String,
+    pub relation_id: String,
+    pub position: DocumentPosition,
+    pub kind: RelationKind,
+    pub source_id: String,
+    pub target_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub operative_source_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excluded_source_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contender_source_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verifier_source_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<EvidenceReference>,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResolutionCandidate {
+    pub source_id: String,
+    pub relevance: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResolutionContext {
+    pub intent_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub as_of: Option<String>,
+    pub requested_roles: Vec<DocumentRole>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requested_clauses: Vec<String>,
+    #[serde(default)]
+    pub scope: ApplicabilityScope,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Disposition {
+    Canonical,
+    InstanceException,
+    ExecutionRecord,
+    Historical,
+    Reference,
+    Excluded,
+    Unresolved,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionReason {
+    HighestRelevance,
+    WeightedMetadata,
+    ScopeMatched,
+    ScopeMismatch,
+    ScopeInputMissing,
+    RoleMatched,
+    RoleSeparated,
+    EffectiveAtRequestedTime,
+    NotEffectiveAtRequestedTime,
+    Approved,
+    NotApproved,
+    HigherAuthority,
+    Superseded,
+    ClauseAmendment,
+    ApplicableException,
+    ExceptionScopeMismatch,
+    ExecutionEvidence,
+    ContractPrecedence,
+    OfficialRecord,
+    NonOfficialCopy,
+    PositionUnresolved,
+    RelationInvalid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResolutionDecision {
+    pub candidate_id: String,
+    pub disposition: Disposition,
+    pub reasons: Vec<DecisionReason>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relation_path: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_inputs: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResolutionOutcome {
+    pub resolver: String,
+    pub decisions: Vec<ResolutionDecision>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Claim {
     pub id: String,
@@ -309,6 +572,28 @@ pub struct BuildMetrics {
     pub rejected_claims: usize,
     pub conflicts: usize,
     pub unresolved_conflicts: usize,
+    #[serde(default)]
+    pub extraction_cache_hits: usize,
+    #[serde(default)]
+    pub extraction_cache_misses: usize,
+    #[serde(default)]
+    pub profile_cache_hits: usize,
+    #[serde(default)]
+    pub profile_cache_misses: usize,
+    #[serde(default)]
+    pub profile_llm_calls: usize,
+    #[serde(default)]
+    pub profile_prompt_tokens: u64,
+    #[serde(default)]
+    pub profile_completion_tokens: u64,
+    #[serde(default)]
+    pub document_profiles: usize,
+    #[serde(default)]
+    pub document_relations: usize,
+    #[serde(default)]
+    pub relation_dossiers: usize,
+    #[serde(default)]
+    pub llm_concurrency: usize,
     pub llm_calls: usize,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,

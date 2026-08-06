@@ -4,7 +4,9 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use fragarach_ir::{CompilationPolicy, KnowledgeBuildStatus, UnresolvedConflictAction};
-use fragarach_llm::OllamaClaimExtractor;
+use fragarach_llm::{
+    CodexAppServerClaimExtractor, KnowledgeExtractor, MetadataOnlyExtractor, OllamaClaimExtractor,
+};
 use serde_json::json;
 
 #[derive(Debug, Parser)]
@@ -56,6 +58,11 @@ enum Command {
         #[command(subcommand)]
         command: IntentCommand,
     },
+    #[command(about = "Inspect persistent Claim extraction cache entries")]
+    Cache {
+        #[command(subcommand)]
+        command: CacheCommand,
+    },
     #[command(about = "Compile parsed evidence into a Knowledge Build")]
     Compile {
         #[arg(long)]
@@ -64,12 +71,25 @@ enum Command {
         workspace: PathBuf,
         #[arg(long, default_value = "knowledge-build")]
         output: PathBuf,
+        #[arg(long, value_enum, default_value_t = CompilerProvider::Ollama)]
+        provider: CompilerProvider,
         #[arg(long)]
         model: String,
         #[arg(long, default_value = "http://127.0.0.1:11434")]
         ollama_endpoint: String,
+        #[arg(long, default_value = "codex")]
+        codex_command: PathBuf,
+        #[arg(long, default_value = "low")]
+        reasoning_effort: String,
         #[arg(long, default_value_t = 12)]
         batch_size: usize,
+        #[arg(
+            long,
+            help = "Maximum concurrent LLM requests (default: Codex 8, Ollama 1)"
+        )]
+        llm_concurrency: Option<usize>,
+        #[arg(long, help = "Disable the persistent source extraction cache")]
+        no_cache: bool,
         #[arg(long)]
         as_of: Option<String>,
         #[arg(long, value_delimiter = ',')]
@@ -105,6 +125,11 @@ enum Command {
     Export {
         #[arg(long, default_value = "knowledge-build")]
         build: PathBuf,
+        #[arg(
+            long,
+            help = "Export only upsert/delete operations relative to this Build"
+        )]
+        base_build: Option<PathBuf>,
         #[arg(long, value_enum, default_value_t = ExportFormat::Jsonl)]
         format: ExportFormat,
         #[arg(long, default_value = "rag-export.jsonl")]
@@ -123,12 +148,28 @@ enum ExportFormat {
     Jsonl,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CompilerProvider {
+    Ollama,
+    CodexAppServer,
+    Metadata,
+}
+
 #[derive(Debug, Subcommand)]
 enum IntentCommand {
     #[command(about = "Validate a Usage Intent YAML file")]
     Validate {
         #[arg(long)]
         file: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum CacheCommand {
+    #[command(about = "Show extraction cache entries without changing them")]
+    Report {
+        #[arg(long, default_value = ".")]
+        workspace: PathBuf,
     },
 }
 
@@ -251,13 +292,49 @@ fn main() -> Result<()> {
                 );
             }
         }
+        Command::Cache {
+            command: CacheCommand::Report { workspace },
+        } => {
+            let report = fragarach_build::read_extraction_cache_report(&workspace)?;
+            if cli.json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("Extraction cache: {}", report.root.display());
+                println!(
+                    "Entries: {}; Evidence: {}; Claims: {}",
+                    report.entries.len(),
+                    report.evidence_units,
+                    report.claims
+                );
+                for entry in report.entries {
+                    println!(
+                        "- {} | intent={} | sources={} | evidence={} | claims={} | model={}",
+                        entry.path.display(),
+                        if entry.intent_id.is_empty() {
+                            "unknown"
+                        } else {
+                            &entry.intent_id
+                        },
+                        entry.source_ids.len(),
+                        entry.evidence_units,
+                        entry.claims,
+                        entry.model
+                    );
+                }
+            }
+        }
         Command::Compile {
             intent,
             workspace,
             output,
+            provider,
             model,
             ollama_endpoint,
+            codex_command,
+            reasoning_effort,
             batch_size,
+            llm_concurrency,
+            no_cache,
             as_of,
             authority_precedence,
             on_unresolved_conflict,
@@ -276,21 +353,47 @@ fn main() -> Result<()> {
                 warnings_as_errors,
                 ..CompilationPolicy::default()
             };
-            let extractor =
-                OllamaClaimExtractor::new(ollama_endpoint, model, Duration::from_secs(180), 42)?;
+            let llm_concurrency = llm_concurrency.unwrap_or(match provider {
+                CompilerProvider::CodexAppServer => 8,
+                CompilerProvider::Ollama | CompilerProvider::Metadata => 1,
+            });
+            if llm_concurrency == 0 {
+                bail!("--llm-concurrency must be greater than zero");
+            }
+            let extractor: Box<dyn KnowledgeExtractor> = match provider {
+                CompilerProvider::Ollama => Box::new(OllamaClaimExtractor::new(
+                    ollama_endpoint,
+                    model,
+                    Duration::from_secs(180),
+                    42,
+                )?),
+                CompilerProvider::CodexAppServer => {
+                    Box::new(CodexAppServerClaimExtractor::new_with_concurrency(
+                        codex_command,
+                        model,
+                        reasoning_effort,
+                        &workspace,
+                        Duration::from_secs(180),
+                        llm_concurrency,
+                    )?)
+                }
+                CompilerProvider::Metadata => Box::new(MetadataOnlyExtractor::new(model)?),
+            };
             let result = fragarach_build::compile_workspace(
                 &fragarach_build::CompileOptions {
                     workspace,
                     intent_file: intent,
                     output,
                     batch_size,
+                    llm_concurrency,
+                    use_extraction_cache: !no_cache,
                     conflict_context: fragarach_build::ConflictContext {
                         as_of,
                         authority_precedence,
                     },
                     policy,
                 },
-                &extractor,
+                extractor.as_ref(),
             )?;
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&result.manifest)?);
@@ -301,6 +404,21 @@ fn main() -> Result<()> {
                     result.manifest.status,
                     result.manifest.diagnostics.warnings,
                     result.manifest.diagnostics.errors
+                );
+                println!(
+                    "Extraction cache: {} hit(s), {} miss(es); LLM calls: {}",
+                    result.manifest.metrics.extraction_cache_hits,
+                    result.manifest.metrics.extraction_cache_misses,
+                    result.manifest.metrics.llm_calls
+                );
+                println!(
+                    "Profile cache: {} hit(s), {} miss(es); profile LLM calls: {}; profiles: {}; relations: {}; dossiers: {}",
+                    result.manifest.metrics.profile_cache_hits,
+                    result.manifest.metrics.profile_cache_misses,
+                    result.manifest.metrics.profile_llm_calls,
+                    result.manifest.metrics.document_profiles,
+                    result.manifest.metrics.document_relations,
+                    result.manifest.metrics.relation_dossiers
                 );
             }
             if result.manifest.status == KnowledgeBuildStatus::Failed {
@@ -399,21 +517,45 @@ fn main() -> Result<()> {
         }
         Command::Export {
             build,
+            base_build,
             format: ExportFormat::Jsonl,
             output,
         } => {
-            let count = fragarach_build::export_rag_jsonl(&build, &output)?;
-            if cli.json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&json!({
-                        "format": "jsonl",
-                        "records": count,
-                        "output": output
-                    }))?
-                );
+            if let Some(base_build) = base_build {
+                let summary =
+                    fragarach_build::export_rag_delta_jsonl(&base_build, &build, &output)?;
+                if cli.json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "format": "jsonl-delta",
+                            "summary": summary,
+                            "output": output
+                        }))?
+                    );
+                } else {
+                    println!(
+                        "Exported RAG delta: {} upsert(s), {} delete(s), {} unchanged: {}",
+                        summary.upserts,
+                        summary.deletes,
+                        summary.unchanged,
+                        output.display()
+                    );
+                }
             } else {
-                println!("Exported {count} RAG record(s): {}", output.display());
+                let count = fragarach_build::export_rag_jsonl(&build, &output)?;
+                if cli.json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json!({
+                            "format": "jsonl",
+                            "records": count,
+                            "output": output
+                        }))?
+                    );
+                } else {
+                    println!("Exported {count} RAG record(s): {}", output.display());
+                }
             }
         }
     }

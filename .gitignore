@@ -1,5 +1,11 @@
 /target/
+/.pytest_cache/
+/.tmp/
+/tmp/
 /.fragarach/
 /packages/npm/platforms/*/bin/
 *.tmp
 *.log
+/tests/corpora/fragrach-enterprise-ja-diverse/generation/cache/
+__pycache__/
+*.py[cod]

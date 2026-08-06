@@ -1,0 +1,9 @@
+projects:
+  - id: export-retention
+    name: エクスポート保持期間変更
+    status: completed
+  - id: generated-project-history
+    name: Mコーパス意思決定事例群
+    status: mixed
+    case_count: 20
+    source_of_truth: scripts/generate-aobane-m-corpus.mjs

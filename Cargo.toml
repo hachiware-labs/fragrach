@@ -6,6 +6,7 @@ members = [
     "crates/fragarach-ir",
     "crates/fragarach-llm",
     "crates/fragarach-parser",
+    "crates/fragarach-resolver",
     "crates/fragarach-workspace",
 ]
 resolver = "3"

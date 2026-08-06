@@ -1,0 +1,21 @@
+company:
+  id: aobane-seiki
+  name: 青羽精機株式会社
+  fictional: true
+  product: AobaWatch
+departments:
+  - id: corporate-management
+    name: 経営管理部
+    responsibilities: [全社規程, 契約, 経営会議]
+  - id: quality-assurance
+    name: 品質保証部
+    responsibilities: [設計レビュー, 監査, 試験証跡]
+  - id: product-development
+    name: 製品開発部
+    responsibilities: [製品設計, 実装, リリース]
+  - id: information-systems
+    name: 情報システム部
+    responsibilities: [本番運用, セキュリティ, 障害指揮]
+  - id: customer-support
+    name: カスタマーサポート部
+    responsibilities: [顧客問い合わせ, 障害連絡]

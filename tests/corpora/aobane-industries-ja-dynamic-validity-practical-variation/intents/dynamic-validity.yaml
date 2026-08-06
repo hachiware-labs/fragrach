@@ -1,0 +1,19 @@
+id: dynamic-validity
+goal: 対象日時点と対象拠点に適用できる正式な業務基準を、版、追補、例外、承認記録、却下記録、競合する指示の関係を含めて示す
+users:
+  - department-member
+  - manager
+  - internal-auditor
+tasks:
+  - 現行版、旧版、改訂案を区別する
+  - 基本基準と承認済み追補または限定例外を組み合わせる
+  - 承認、却下、正本指定、競合解決を公式台帳から確認する
+  - 同格の有効文書が未解決なら一方を推測で優先しない
+questions:
+  - 指定時点と指定拠点に適用される基準値は何か
+  - 変更文書は承認済みで基本基準へ適用できるか
+  - 複数の指示が競合する場合に優先関係を確定できるか
+requirements:
+  evidence_required: true
+  temporal_scope_required: true
+  unresolved_conflicts_allowed: true

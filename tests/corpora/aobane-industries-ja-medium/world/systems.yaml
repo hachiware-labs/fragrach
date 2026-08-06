@@ -1,0 +1,14 @@
+systems:
+  - id: aobawatch
+    name: AobaWatch
+    type: equipment-monitoring-service
+    owner_role: 製品責任者
+  - id: production-platform
+    name: AobaWatch本番基盤
+    type: production-platform
+    owner_role: 運用マネージャー
+  - id: training-systems
+    name: Mコーパス研修用社内システム群
+    type: fictional-internal-systems
+    case_count: 20
+    source_of_truth: scripts/generate-aobane-m-corpus.mjs

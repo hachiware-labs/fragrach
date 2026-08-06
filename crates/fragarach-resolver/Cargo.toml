@@ -1,0 +1,16 @@
+[package]
+name = "fragarach-resolver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+chrono.workspace = true
+fragarach-ir = { path = "../fragarach-ir" }
+serde.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+fragarach-llm = { path = "../fragarach-llm" }
+serde_json.workspace = true

@@ -1,7 +1,7 @@
 # Fragrach ユーザーマニュアル
 
 対象バージョン: 0.1.0 開発版  
-更新日: 2026-07-28
+更新日: 2026-08-01
 
 ## Fragrachの役割
 
@@ -35,7 +35,7 @@ flowchart LR
 
 図の右端にあるRAGやAgentは利用者が用意します。Fragrachの役割は、その手前で原文と利用目的を照合し、根拠、矛盾、情報不足を失わない知識成果物を作ることです。
 
-原文をEvidenceへ分割し、ローカルLLMでEvidence付きClaim候補を抽出します。その後、Rust側で参照先、適用期間、文書の権威性、状態、矛盾、不足を検証し、Knowledge Buildとして確定します。判断できない矛盾は勝手に解消せず、Warningと根拠を残します。
+原文をEvidenceへ分割し、選択したコンパイルProviderでEvidence付きClaim候補を抽出します。その後、Rust側で参照先、適用期間、文書の権威性、状態、矛盾、不足を検証し、Knowledge Buildとして確定します。判断できない矛盾は勝手に解消せず、Warningと根拠を残します。
 
 主な利用者は、社内RAGを構築する開発者です。文書管理者は文書の権威順位と施行日を整え、業務担当者はUsage Intentと未解決事項を確認します。RAG開発者は確定したJSONLと検索・回答契約を下流システムへ組み込みます。
 
@@ -43,13 +43,13 @@ flowchart LR
 
 入力できる文書はUTF-8のMarkdown、`.markdown`、プレーンテキストです。PDF、Office文書、画像、OCRには対応していません。
 
-Claim抽出にはOllamaを使います。文書は設定したOllama endpointへ送られるため、標準設定のローカルOllamaを使う場合は端末外へ送信されません。外部ホストのendpointを指定した場合は、そのホストへEvidence本文が送られます。Fragrach自体はOllama以外のLLM APIへ接続しません。
+Claim抽出Providerは、OllamaとCodex App Serverから選べます。標準のOllama endpointを使う場合、Evidence本文は端末外へ送信されません。外部Ollama endpointを指定した場合はそのホストへ、Codex App Serverを選んだ場合はCodexが使用するモデルProviderへEvidence本文が送られます。
 
 npm用パッケージとWindows x64、Linux x64/arm64、macOS x64/arm64の構成は用意されていますが、0.1.0はnpmレジストリへ未公開です。現時点ではソースからビルドするか、ローカルで作成したtarballを使います。ライセンスも`UNLICENSED`であり、組織導入用の公開リリースではありません。
 
 ## 最短の利用手順
 
-### 1. CLIとOllamaを準備する
+### 1. CLIとコンパイルProviderを準備する
 
 開発版にはRust 1.94以降とCargoが必要です。リポジトリのルートでreleaseバイナリを作ります。
 
@@ -68,6 +68,12 @@ ollama serve
 ```
 
 Ollamaが別の端末ですでに動いている場合、`ollama serve`を重ねて実行する必要はありません。
+
+Codex App Serverを使う場合はCodex CLIをインストールし、あらかじめCodexへサインインしてください。Fragrachはコンパイル中にCodexのログイン画面を開きません。
+
+```powershell
+codex --version
+```
 
 ### 2. ワークスペースを初期化する
 
@@ -166,22 +172,64 @@ effective_to: 2027-03-31
 fragarach compile `
   --workspace C:\knowledge\work `
   --intent C:\knowledge\corpus\intents\developer-onboarding.yaml `
+  --provider ollama `
   --model gemma4:latest `
   --output C:\knowledge\builds\developer-onboarding-v1
 ```
 
+Codex App Serverを使う場合も、Knowledge Buildの形式と後段のRust検証は同じです。
+
+```powershell
+fragarach compile `
+  --workspace C:\knowledge\work `
+  --intent C:\knowledge\corpus\intents\developer-onboarding.yaml `
+  --provider codex-app-server `
+  --model gpt-5.6-luna `
+  --reasoning-effort low `
+  --llm-concurrency 8 `
+  --output C:\knowledge\builds\developer-onboarding-luna-v1
+```
+
+文書ID、版、Position、対象文書、確認文書がfront matterに明記され、本文からClaimを抽出しない用途では、LLMを呼ばない`metadata` providerを使えます。
+
+```powershell
+fragarach compile `
+  --workspace C:\knowledge\work `
+  --intent C:\knowledge\corpus\intents\document-control.yaml `
+  --provider metadata `
+  --model front-matter-v1 `
+  --output C:\knowledge\builds\document-control-v1
+```
+
+`metadata`は、明示された文書管理metadataをDocument Profile、Position Relation、Decision Packetへ変換し、通常の検証を行う限定providerです。本文からClaimや欠けたPositionを推定せず、`claims.jsonl`は空になります。必要な管理情報が原文にない場合は、OllamaまたはCodex App Serverによる抽出を使ってください。
+
 必要に応じて、次のオプションを使います。
 
+- `--provider`: `ollama`、`codex-app-server`、`metadata`。既定は`ollama`
 - `--ollama-endpoint`: 既定は`http://127.0.0.1:11434`
+- `--codex-command`: Codex CLIの実行ファイル。既定は`codex`
+- `--reasoning-effort`: Codexモデルのreasoning effort。既定は`low`
 - `--batch-size`: 1回の抽出へ渡すEvidence数。既定は12
+- `--llm-concurrency`: 同時に実行するLLM抽出requestの上限。既定はCodex App Serverが8、Ollamaが1。複数processや複数shardを同時実行する場合は、全processの合計並列度を考慮して各processの値を下げる
+- `--no-cache`: 保存済みのClaim抽出応答を使わず、すべてLLMで再抽出する
 - `--as-of YYYY-MM-DD`: ビルド全体の基準日
 - `--authority-precedence a,b,c`: `corpus.yaml`の順位をコマンドで上書き
 - `--on-unresolved-conflict error`: 未解決ConflictをErrorにする
 - `--warnings-as-errors`: すべてのWarningで公開を失敗させる
 
-コンパイルはSource文書ごとのバッチを使い、長い文書だけ境界を重ねて分割します。候補Claimが存在しないEvidence IDを引用した場合や、日付形式が不正な場合はRust側で拒否します。相対的な期限を適用期間と誤認した候補は、期限内容を残して無効な日付だけを除去します。
+コンパイルはSource文書ごとのバッチを使い、長い文書だけ境界を重ねて分割します。複数batchは`--llm-concurrency`の上限内で並列実行し、完了順ではなく入力batch順へ戻して検証します。Codex App Serverは並列度ぶん独立clientを起動します。OllamaはVRAM消費とserver側の直列化を考慮して既定1であり、利用環境で安全性を確認した場合だけ明示的に増やしてください。`metadata`はLLM requestを発行しないため、この並列度は使いません。候補Claimが存在しないEvidence IDを引用した場合や、日付形式が不正な場合はRust側で拒否します。相対的な期限を適用期間と誤認した候補は、期限内容を残して無効な日付だけを除去します。
 
-成功したBuildは指定先へ一度に公開されます。ポリシー上失敗したBuildは指定先へ出さず、`.fragarach/failed-builds/<build-id>`へ診断付きで保存します。中断した一時Buildは完成Buildとして扱われません。同じワークスペースへの`scan`、`compile`、`recompile`の並行実行はロックで拒否されるため、先行処理の終了後に再実行してください。
+Claim抽出応答は既定で`.fragarach/cache/claim-extraction-v1`へバッチごとに保存されます。Source本文とメタデータ、Usage Intent、Provider、モデル識別情報が同じ場合だけ再利用します。Ollamaではモデルdigest、seed、コンテキスト長を、Codex App ServerではCodex CLI版、モデル、reasoning effort、プロトコル版を識別情報に含めます。抽出プロンプト、出力スキーマ、述語カタログも一つの指紋として記録されるため、精度改善で抽出契約を変更すると古いキャッシュは自動的に対象外になります。Build Manifestの`extraction_cache_hits`、`extraction_cache_misses`、`llm_calls`で利用状況を確認できます。
+
+再コンパイル前に、保存済みキャッシュのIntent、Source数、Evidence数、Claim数、モデルを読み取り専用で確認できます。
+
+```powershell
+fragarach cache report --workspace C:\knowledge\work
+```
+
+機械処理する場合はグローバルオプションの`--json`を付けます。報告に残っているエントリは「現在の条件でも再利用される」という意味ではありません。再利用可否は、コンパイル時に現在の入力と抽出指紋を含む完全なキーで判定されます。
+
+成功したBuildは指定先へ一度に公開されます。ポリシー上失敗したBuildは指定先へ出さず、`.fragarach/failed-builds/<build-id>`へ診断付きで保存します。中断した一時Buildは完成Buildとして扱われませんが、中断前に完了したClaim抽出応答はキャッシュへ残るため、同じ条件で`compile`を再実行すると続きから処理できます。同じワークスペースへの`scan`、`compile`、`recompile`の並行実行はロックで拒否されるため、先行処理の終了後に再実行してください。
 
 ### 7. Warningを確認する
 
@@ -226,14 +274,27 @@ fragarach export `
 
 JSONLはEvidenceを中心に関連Claimをまとめます。各行には、原文本文、Claim、条件、状態、権威性、Conflict ID、Intent ID、引用位置が入ります。完全重複した文書のパスは同じEvidenceの別名として保持されます。Conflictとは別の根拠付きDiagnosticも独立した検索単位として出るため、情報不足を下流RAGが検索できます。
 
+すでに旧Buildを索引済みなら、全件を登録し直さず差分だけを出力できます。
+
+```powershell
+fragarach export `
+  --base-build C:\knowledge\builds\developer-onboarding-v1 `
+  --build C:\knowledge\builds\developer-onboarding-v2 `
+  --format jsonl `
+  --output C:\knowledge\exports\developer-onboarding-v1-v2.delta.jsonl
+```
+
+差分には、追加または変更された検索レコードの`upsert`、対象Buildから消えたIDの`delete`、末尾の`commit`だけが入ります。変更のないレコードは入りません。原文編集では引用IDを別内容へ上書きしないため、通常は旧Evidenceの`delete`と新Evidenceの`upsert`になります。
+
 下流RAGでは少なくとも次を実装してください。
 
 1. Intentごとに索引またはフィルターを分ける。
 2. 質問の`as_of`とClaimの`valid_from`、`valid_to`で対象時点を絞る。
 3. `retrieval-profile.yaml`の権威順位を検索スコアと回答判断へ反映する。
 4. `answer-contract.yaml`に従って引用と未解決Conflictを回答へ出す。
+5. 差分適用時は現在のBuild IDが`base_build_id`と一致することを確認し、操作をstagingへ適用した後、`commit`を検証して`target_build_id`へ切り替える。途中状態は検索へ公開しない。
 
-Fragrachはベクトル化や登録処理を行わないため、JSONLを利用中の検索基盤へ渡すアダプターは利用者が実装します。
+Fragrachはベクトル化や登録処理を行わないため、JSONLを利用中の検索基盤へ渡すアダプターは利用者が実装します。差分exportは最小操作と版境界を定義しますが、LanceDBなど各基盤のtransactionそのものは実行しません。
 
 ## Knowledge Buildの読み方
 
@@ -279,7 +340,7 @@ Oracleは「正しい知識単位を作れた場合の上限」であり、Fragr
 
 この結果は架空コーパスと一つのモデルによる開発時評価です。実データで導入判断する前に、利用目的ごとの質問、時点、禁止回答、人手判定を用意し、Raw RAGと並行評価してください。推奨文書数、メモリ、ディスク容量の保証値はまだありません。
 
-47文書の初回コンパイルは、Intentごとに約300秒から599秒、LLM呼び出し47回、入力token約13.5万から13.6万でした。4 Intentの合計は約30分25秒、入力542,495 tokenです。検証規則だけを更新した`recompile`は、LLM 0回、35msでした。端末、モデル、文書構成で変わるため、性能保証ではありません。詳しい条件と設問別結果は`tests/benchmarks/rag-comparison/UPPER_BOUND_FINDINGS_ja.md`を参照してください。
+47文書の初回コンパイルは、Intentごとに約300秒から599秒、LLM呼び出し47回、入力token約13.5万から13.6万でした。4 Intentの合計は約30分25秒、入力542,495 tokenです。検証規則だけを更新した`recompile`は、LLM 0回、35msでした。現在の`compile`は同じ抽出条件の応答をSource単位でキャッシュするため、2回目以降は未変更バッチのLLM呼び出しを省略します。端末、モデル、文書構成、キャッシュ状態で変わるため、これらは性能保証ではありません。詳しい条件と設問別結果は`tests/benchmarks/rag-comparison/UPPER_BOUND_FINDINGS_ja.md`を参照してください。
 
 ## npmパッケージをローカル検証する
 
@@ -303,6 +364,6 @@ npm pack .\packages\npm\fragarach `
 
 `output already exists`なら、過去Buildを削除せず新しい出力パスを指定します。失敗理由は`report --build <失敗Buildのパス>`または`diagnostics.jsonl`で確認できます。
 
-Ollamaへの接続や構造化出力に失敗した場合、公開済みBuildは変更されません。endpoint、モデルの導入状態、Ollamaのログを確認して同じ`compile`を再実行してください。
+Providerへの接続や構造化出力に失敗した場合、公開済みBuildは変更されません。Ollamaではendpoint、モデルの導入状態、Ollamaのログを確認します。Codex App ServerではCodex CLIの版、サインイン状態、モデルの利用可否を確認します。修正後に同じ`compile`を再実行すると、中断前に保存された抽出キャッシュを再利用します。キャッシュを使わず原因を切り分ける場合は`--no-cache`を指定します。
 
-走査結果が想定より多い場合は、Source Rootを狭くし、`--include`、`--exclude`、`--max-file-size`を設定します。機密文書を外部Ollama endpointへ送らないよう、コンパイル前にendpointと走査Manifestを確認してください。
+走査結果が想定より多い場合は、Source Rootを狭くし、`--include`、`--exclude`、`--max-file-size`を設定します。機密文書を外部Ollama endpointやCodexのモデルProviderへ送信できるか、コンパイル前にProvider設定と走査Manifestを確認してください。

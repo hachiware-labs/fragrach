@@ -1,0 +1,118 @@
+{
+  "schema_version": "1.0",
+  "outline_id": "outline-c8d936627dac27da",
+  "document_id": "ENT-SOFTWARE-SRE-S3-OPERATIONS-PROCEDURE",
+  "title": "信頼性と本番運用の月次照合 全社手順",
+  "domain": "software-sre",
+  "purpose": "operations",
+  "document_type": "operating_procedure",
+  "target_chars": 7500,
+  "gold_anchor_placement": "deterministic-distributed",
+  "sections": [
+    {
+      "id": "context-01",
+      "kind": "generated_context",
+      "heading": "手順書の目的",
+      "instruction": "現場で一貫した作業を行うための文書の役割を説明する。",
+      "target_chars": 618
+    },
+    {
+      "id": "context-02",
+      "kind": "generated_context",
+      "heading": "対象業務の流れ",
+      "instruction": "準備、実施、確認、記録の一般的な流れを説明する。",
+      "target_chars": 618
+    },
+    {
+      "id": "context-03",
+      "kind": "generated_context",
+      "heading": "役割分担",
+      "instruction": "実施者、確認者、管理者の一般的な役割を説明する。",
+      "target_chars": 618
+    },
+    {
+      "id": "context-04",
+      "kind": "generated_context",
+      "heading": "事前確認",
+      "instruction": "作業開始前に対象、版、状態を確認する観点を説明する。",
+      "target_chars": 618
+    },
+    {
+      "id": "gold-01",
+      "kind": "gold_anchor",
+      "heading": "対象",
+      "anchor": "本手順は信頼性と本番運用の月次照合の標準運用を定める。",
+      "guidance": "標準適用範囲を書く。"
+    },
+    {
+      "id": "context-05",
+      "kind": "generated_context",
+      "heading": "実施上の注意",
+      "instruction": "誤操作や対象違いを防ぐ一般的な注意事項を説明する。",
+      "target_chars": 618
+    },
+    {
+      "id": "context-06",
+      "kind": "generated_context",
+      "heading": "例外の扱い",
+      "instruction": "期限付き例外や個別指示を対象外へ広げない読み方を説明する。",
+      "target_chars": 618
+    },
+    {
+      "id": "gold-02",
+      "kind": "gold_anchor",
+      "heading": "頻度",
+      "anchor": "信頼性と本番運用の月次照合は月末に一回実施する。",
+      "guidance": "実施記録について書く。"
+    },
+    {
+      "id": "context-07",
+      "kind": "generated_context",
+      "heading": "記録方法",
+      "instruction": "実施事実を後から追跡するための一般的な記録観点を説明する。",
+      "target_chars": 618
+    },
+    {
+      "id": "context-08",
+      "kind": "generated_context",
+      "heading": "異常時の連携",
+      "instruction": "想定外の状態を検出した際の一般的な連携観点を説明する。",
+      "target_chars": 618
+    },
+    {
+      "id": "context-09",
+      "kind": "generated_context",
+      "heading": "レビュー",
+      "instruction": "作業結果と記録の整合を確認する一般的なレビュー方法を説明する。",
+      "target_chars": 618
+    },
+    {
+      "id": "context-10",
+      "kind": "generated_context",
+      "heading": "教育と引継ぎ",
+      "instruction": "手順の理解を担当者間で揃える一般的な方法を説明する。",
+      "target_chars": 618
+    },
+    {
+      "id": "gold-03",
+      "kind": "gold_anchor",
+      "heading": "例外",
+      "anchor": "承認済みの期限付き逸脱がある場合だけ、その適用範囲で例外を認める。",
+      "guidance": "例外の限定性を書く。"
+    },
+    {
+      "id": "context-11",
+      "kind": "generated_context",
+      "heading": "変更管理",
+      "instruction": "標準手順、現場指示、例外、実施記録を区別する方法を説明する。",
+      "target_chars": 618
+    },
+    {
+      "id": "context-12",
+      "kind": "generated_context",
+      "heading": "検索・参照ガイド",
+      "instruction": "対象と時点に合う手順を検索するための語彙を説明する。",
+      "target_chars": 618
+    }
+  ]
+}

@@ -1,0 +1,118 @@
+{
+  "schema_version": "1.0",
+  "outline_id": "outline-59168c80c4f9f404",
+  "document_id": "ENT-HEALTHCARE-QUALITY-REGULATORY-S1-COMMERCIAL-COMPLIANCE-MASTER",
+  "title": "品質保証と規制対応支援契約-QUALITY-REGULATORY 基本契約",
+  "domain": "healthcare-quality-regulatory",
+  "purpose": "commercial_compliance",
+  "document_type": "master_agreement",
+  "target_chars": 9000,
+  "gold_anchor_placement": "deterministic-distributed",
+  "sections": [
+    {
+      "id": "context-01",
+      "kind": "generated_context",
+      "heading": "契約文書の目的",
+      "instruction": "基本契約が共通条件を定める役割を説明する。",
+      "target_chars": 738
+    },
+    {
+      "id": "context-02",
+      "kind": "generated_context",
+      "heading": "取引の背景",
+      "instruction": "対象取引と関係部門の一般的な業務背景を説明する。",
+      "target_chars": 738
+    },
+    {
+      "id": "gold-01",
+      "kind": "gold_anchor",
+      "heading": "契約対象",
+      "anchor": "本契約は品質保証と規制対応支援契約-QUALITY-REGULATORYの共通条件を定める。",
+      "guidance": "契約範囲を書く。"
+    },
+    {
+      "id": "context-03",
+      "kind": "generated_context",
+      "heading": "文書体系",
+      "instruction": "基本契約、個別契約、提案、監査記録の役割の違いを説明する。",
+      "target_chars": 738
+    },
+    {
+      "id": "context-04",
+      "kind": "generated_context",
+      "heading": "適用範囲",
+      "instruction": "組織、対象業務、契約単位を確認する一般的な方法を説明する。",
+      "target_chars": 738
+    },
+    {
+      "id": "context-05",
+      "kind": "generated_context",
+      "heading": "責任分界",
+      "instruction": "当事者間の責任を読む際の一般的な観点を説明する。",
+      "target_chars": 738
+    },
+    {
+      "id": "context-06",
+      "kind": "generated_context",
+      "heading": "履行確認",
+      "instruction": "契約上の条件と実績記録を照合する一般的な方法を説明する。",
+      "target_chars": 738
+    },
+    {
+      "id": "context-07",
+      "kind": "generated_context",
+      "heading": "例外と優先順位",
+      "instruction": "個別条件を対象外へ広げずに読む方法を説明する。",
+      "target_chars": 738
+    },
+    {
+      "id": "gold-02",
+      "kind": "gold_anchor",
+      "heading": "標準条件",
+      "anchor": "品質保証と規制対応支援契約-QUALITY-REGULATORYでは重要依頼の一次応答は四時間以内。",
+      "guidance": "標準サービス条件を書く。"
+    },
+    {
+      "id": "context-08",
+      "kind": "generated_context",
+      "heading": "未署名資料の扱い",
+      "instruction": "提案を契約義務として扱わない読解上の注意を説明する。",
+      "target_chars": 738
+    },
+    {
+      "id": "context-09",
+      "kind": "generated_context",
+      "heading": "変更と更新",
+      "instruction": "改定、更新、個別合意を追跡する一般的な管理方法を説明する。",
+      "target_chars": 738
+    },
+    {
+      "id": "gold-03",
+      "kind": "gold_anchor",
+      "heading": "優先順位",
+      "anchor": "個別契約で対象を明示して変更した条件は、その対象に限り基本契約より優先する。",
+      "guidance": "文書優先関係を書く。"
+    },
+    {
+      "id": "context-10",
+      "kind": "generated_context",
+      "heading": "監査証跡",
+      "instruction": "判断根拠と参照文書を後から確認する一般的な記録方法を説明する。",
+      "target_chars": 738
+    },
+    {
+      "id": "context-11",
+      "kind": "generated_context",
+      "heading": "部門間の照会",
+      "instruction": "法務、調達、事業部門が確認事項を受け渡す観点を説明する。",
+      "target_chars": 738
+    },
+    {
+      "id": "context-12",
+      "kind": "generated_context",
+      "heading": "検索・参照ガイド",
+      "instruction": "対象契約と文書優先順位を検索で確認する語彙を説明する。",
+      "target_chars": 738
+    }
+  ]
+}

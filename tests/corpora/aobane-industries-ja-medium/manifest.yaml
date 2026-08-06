@@ -1,0 +1,32 @@
+id: aobane-industries-ja-medium
+version: "0.2.0"
+title: 青羽精機 社内文書コーパス M
+language: ja
+fictional: true
+license:
+  source_documents: undecided
+  gold_labels: undecided
+scale:
+  class: M
+  source_documents: 500
+  questions: 100
+  expected_evidence_units: "4000-8000"
+noise_profile: typical
+nested_base_documents: 100
+generation:
+  method: structured-world-first-with-ollama-prose
+  model: gemma4:latest
+  seed: 20260728
+  temperature: 0.15
+  report: generation/ollama-generation-report.json
+supported_source_formats:
+  - markdown
+  - text
+deferred_format_families:
+  - html
+  - pdf
+  - docx
+  - xlsx
+  - csv
+  - pptx
+deferred_format_reason: Fragrach v0.1 parser supports Markdown and Text only.

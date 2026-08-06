@@ -1,0 +1,44 @@
+---
+document_id: "ENT-LOGISTICS-TRANSPORT-S2-PLANNING-ANALYSIS"
+title: "国内輸配送業務の自動化 方式比較資料"
+company: "北辰ロジスティクス"
+industry: "logistics"
+department: "transport"
+department_name: "輸配送部"
+scenario: "logistics-transport-S2"
+purpose: "planning"
+document_type: "options_analysis"
+status: "reviewed"
+authority: "analysis"
+owner: "輸配送部責任者"
+approved: true
+force: "informational"
+force_rank: 5
+valid_from: "2026-04-01"
+official_record: false
+scope: {"organization":"北辰ロジスティクス"}
+synthetic: true
+generation_model: "gemma4:latest"
+---
+
+# 国内輸配送業務の自動化 方式比較資料
+
+> 架空の評価用社内文書です。固有名詞・制度・数値は実在組織と無関係です。
+
+## 比較対象
+
+国内輸配送業務の自動化に向けた方式選定プロセスが完了し、具体的な導入計画を策定しました。本資料群は、初期検討段階から複数の実施案（全対象一括適用案と関東配車センター代表業務での二段階導入案）を比較検証した経緯をまとめたものです。特に、誤処理率や作業時間の段階的な比較が可能である「関東配車センターの代表業務で二段階導入する」方式が評価され、正式な実施方式として決定されました。この計画に基づき、各フェーズでの具体的な進捗と完了記録を確認し、本システムの本格稼働に向けた準備を進めてまいります。
+
+「全対象へ一括適用する」と「関東配車センターの代表業務で二段階導入する」を比較した。
+
+## 評価
+
+この節では、評価の前提を書く。 記載された確定事項と文書の適用範囲を合わせて確認する。
+
+「関東配車センターの代表業務で二段階導入する」は誤処理率と作業時間を段階ごとに比較できるため、評価上優位である。
+
+## 限界
+
+この節では、分析と決定の違いを書く。 記載された確定事項と文書の適用範囲を合わせて確認する。
+
+本資料は比較結果であり最終決定そのものではない。

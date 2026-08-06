@@ -1,0 +1,19 @@
+id: onboarding
+goal: 新任者が社内システム、正式責任者、役割の別名、問い合わせ先を根拠付きで確認する
+users:
+  - new-department-member
+  - onboarding-mentor
+tasks:
+  - 正式責任者と実態上の相談相手を区別する
+  - 通称を正式名称へ名寄せする
+  - 責任者が定められていない場合は推測を控える
+questions:
+  - 社内システムの正式名称、通称、正式責任者は何か
+  - 役割の別名はどの正式な人物、役割、組織を指すか
+  - 実態上の相談相手と正式責任者は同一か
+  - 正式責任者が文書にない場合に何が不足しているか
+  - 担当経験者が正式責任者として承認されていない場合に推測を避けるべきか
+requirements:
+  evidence_required: true
+  temporal_scope_required: true
+  unresolved_conflicts_allowed: true

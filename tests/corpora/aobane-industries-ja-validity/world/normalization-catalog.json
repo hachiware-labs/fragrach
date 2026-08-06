@@ -1,0 +1,20 @@
+{
+  "scope_aliases": [
+    {"dimension":"site","canonical":"osaka","aliases":["大阪工場","osaka factory"]},
+    {"dimension":"site","canonical":"tokyo","aliases":["東京事業所","tokyo branch"]},
+    {"dimension":"lot","canonical":"LOT-42","aliases":["lot-42"]},
+    {"dimension":"lot","canonical":"LOT-99","aliases":["lot-99"]},
+    {"dimension":"contract","canonical":"ACME-2026","aliases":["ACME基本契約","ACME SOW-02","acme sow-02"]},
+    {"dimension":"contract","canonical":"BETA-2026","aliases":["BETA基本契約"]},
+    {"dimension":"asset","canonical":"EQ-19","aliases":["eq-19"]}
+  ],
+  "clause_aliases": [
+    {"canonical":"clause_4","aliases":["第4条","報告期限を五営業日","報告期限を十営業日"]},
+    {"canonical":"clause_7","aliases":["第7条","承認者を品質保証部長"]},
+    {"canonical":"delivery_deadline","aliases":["納入期限"]},
+    {"canonical":"liability_limit","aliases":["責任制限"]},
+    {"canonical":"inspection_frequency","aliases":["全数検査","抜取検査"]}
+  ],
+  "universal_values": ["all branches","all sites","all lots","all contracts","すべての拠点","対象部品"],
+  "empty_values": ["null","none","n/a","unknown","[]","{}","不明","未指定"]
+}

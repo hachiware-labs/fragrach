@@ -10,6 +10,7 @@ anyhow.workspace = true
 chrono.workspace = true
 fragarach-ir = { path = "../fragarach-ir" }
 fragarach-llm = { path = "../fragarach-llm" }
+fragarach-resolver = { path = "../fragarach-resolver" }
 fragarach-workspace = { path = "../fragarach-workspace" }
 globset.workspace = true
 serde.workspace = true

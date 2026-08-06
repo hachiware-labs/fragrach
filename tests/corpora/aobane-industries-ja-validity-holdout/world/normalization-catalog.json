@@ -1,0 +1,18 @@
+{
+  "scope_aliases": [
+    {"dimension":"entity","canonical":"aobane-jp","aliases":["青羽精機日本法人","日本法人"]},
+    {"dimension":"entity","canonical":"aobane-us","aliases":["青羽精機米国法人","米国法人"]},
+    {"dimension":"site","canonical":"nagoya","aliases":["名古屋工場","名古屋"]},
+    {"dimension":"site","canonical":"osaka","aliases":["大阪工場","大阪"]},
+    {"dimension":"product","canonical":"PX-8","aliases":["PX-8シリーズ","製品PX-8"]},
+    {"dimension":"asset","canonical":"EQ-77","aliases":["設備EQ-77"]},
+    {"dimension":"project","canonical":"ORION","aliases":["ORION案件","案件ORION"]}
+  ],
+  "clause_aliases": [
+    {"canonical":"incident_deadline","aliases":["事故報告期限","第4条","報告期限"]},
+    {"canonical":"retention_period","aliases":["保存期間","第7条"]},
+    {"canonical":"shutdown_threshold","aliases":["停止基準","緊急停止基準"]}
+  ],
+  "universal_values":["全社","すべての拠点","全製品"],
+  "empty_values":["null","none","[]","{}","未指定"]
+}

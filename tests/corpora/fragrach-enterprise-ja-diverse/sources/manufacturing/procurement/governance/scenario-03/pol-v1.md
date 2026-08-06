@@ -1,0 +1,46 @@
+---
+document_id: "ENT-MANUFACTURING-PROCUREMENT-S3-GOVERNANCE-POL-V1"
+title: "重要部材と供給元管理記録の保存期間規程 第1版"
+company: "東雲精工"
+industry: "manufacturing"
+department: "procurement"
+department_name: "調達部"
+scenario: "manufacturing-procurement-S3"
+purpose: "governance"
+document_type: "policy"
+status: "superseded"
+authority: "corporate_policy"
+owner: "調達部責任者"
+approved: true
+force: "mandatory"
+force_rank: 9
+valid_from: "2025-04-01"
+valid_to: "2026-03-31"
+version: "1.0"
+official_record: false
+scope: {"organization":"東雲精工"}
+synthetic: true
+generation_model: "gemma4:latest"
+---
+
+# 重要部材と供給元管理記録の保存期間規程 第1版
+
+> 架空の評価用社内文書です。固有名詞・制度・数値は実在組織と無関係です。
+
+## 目的
+
+本資料群は、重要部材と供給元管理記録の保存期間に関する最新の取り扱い指針を定めるものです。特に、過去の規程やFAQの内容との整合性を確認し、現場での混乱を防ぐことを目的としています。関係部署においては、現在の要件が適切に理解され、今後の業務プロセスへの反映が求められます。本内容について疑問点が生じた場合は、承認された最新版の規程および関連する正式記録を参照し、調達部門へ確認を行ってください。
+
+本規程は重要部材と供給元管理記録の保存期間を定める。
+
+## 承認規則
+
+この節では、旧規則の運用場面を説明する。 記載された確定事項と文書の適用範囲を合わせて確認する。
+
+2025年4月1日から2026年3月31日まで、重要部材と供給元管理記録の保存期間は二年間保存する。
+
+## 適用期間
+
+この節では、改訂日を混同しない注意を書く。 記載された確定事項と文書の適用範囲を合わせて確認する。
+
+本版の適用は2026年3月31日に終了した。

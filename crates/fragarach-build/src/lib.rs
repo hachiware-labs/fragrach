@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use fragarach_ir::{
     Claim, CompilationPolicy, Conflict, ConflictKind, ConflictStatus, Diagnostic,
-    DiagnosticSeverity, ParsedDocument, UsageIntent,
+    DiagnosticSeverity, EvidenceReference, ParsedDocument, UsageIntent,
 };
 use fragarach_llm::{ClaimCandidate, ClaimExtractionResponse, PromptEvidence};
 use sha2::{Digest, Sha256};
@@ -16,8 +16,9 @@ use sha2::{Digest, Sha256};
 mod pipeline;
 
 pub use pipeline::{
-    BuildReport, CompileOptions, CompileResult, RecompileOptions, compile_workspace,
-    export_rag_jsonl, read_build_report, recompile_build,
+    BuildReport, CompileOptions, CompileResult, ExtractionCacheEntrySummary, ExtractionCacheReport,
+    RagDeltaSummary, RecompileOptions, compile_workspace, export_rag_delta_jsonl, export_rag_jsonl,
+    read_build_report, read_extraction_cache_report, recompile_build,
 };
 
 pub const REQUIRED_BUILD_ARTIFACTS: &[(&str, &str)] = &[
@@ -140,6 +141,7 @@ pub fn validate_extraction(
     let mut rejected_claims = 0;
 
     for (index, mut candidate) in response.claims.into_iter().enumerate() {
+        enrich_structured_evidence(&mut candidate, available_evidence);
         apply_source_metadata(&mut candidate, available_evidence);
         normalize_candidate_semantics(&mut candidate);
         let reasons = candidate_validation_errors(&candidate, &available);
@@ -188,6 +190,52 @@ fn normalize_candidate_semantics(candidate: &mut ClaimCandidate) {
         }
         _ => {}
     }
+}
+
+fn enrich_structured_evidence(
+    candidate: &mut ClaimCandidate,
+    available_evidence: &[PromptEvidence],
+) {
+    let expected_headings: &[&str] = match candidate.predicate.as_str() {
+        "incident_cause" => &["原因", "root cause", "cause"],
+        "temporary_remediation" => &["暫定対応", "復旧", "mitigation", "recovery"],
+        "permanent_remediation" => &["恒久対策", "permanent remediation", "corrective action"],
+        _ => return,
+    };
+    let referenced_sources = candidate
+        .evidence
+        .iter()
+        .map(|reference| reference.source_id.as_str())
+        .collect::<HashSet<_>>();
+    let existing = candidate
+        .evidence
+        .iter()
+        .map(|reference| (reference.source_id.as_str(), reference.evidence_id.as_str()))
+        .collect::<HashSet<_>>();
+    let additions = available_evidence
+        .iter()
+        .filter(|evidence| referenced_sources.contains(evidence.source_id.as_str()))
+        .filter(|evidence| {
+            evidence
+                .heading_path
+                .last()
+                .is_some_and(|heading| heading_matches(heading, expected_headings))
+        })
+        .filter(|evidence| !evidence.text.trim_start().starts_with('#'))
+        .filter(|evidence| {
+            !existing.contains(&(evidence.source_id.as_str(), evidence.evidence_id.as_str()))
+        })
+        .map(|evidence| EvidenceReference {
+            source_id: evidence.source_id.clone(),
+            evidence_id: evidence.evidence_id.clone(),
+        })
+        .collect::<Vec<_>>();
+    candidate.evidence.extend(additions);
+}
+
+fn heading_matches(heading: &str, expected: &[&str]) -> bool {
+    let normalized = heading.trim().to_lowercase();
+    expected.iter().any(|value| normalized == *value)
 }
 
 fn clear_relative_duration(value: &mut Option<String>) {
@@ -431,16 +479,19 @@ fn predicate_requires_matching_condition(predicate: &str) -> bool {
             | "allows_review_omission"
             | "requires_approval"
             | "allows_self_approval"
-            | "has_status"
             | "incident_commander"
             | "access_duration"
             | "access_approver"
             | "notification_approver"
+            | "is_approved_as"
     )
 }
 
 fn predicate_is_single_valued(predicate: &str) -> bool {
     let predicate = predicate.trim().to_ascii_lowercase();
+    if predicate == "has_status" {
+        return false;
+    }
     [
         "deadline", "duration", "limit", "status", "version", "interval", "window", "within",
         "required", "allowed", "enabled", "minimum", "maximum",
@@ -455,6 +506,8 @@ fn predicate_is_single_valued(predicate: &str) -> bool {
                 | "incident_commander"
                 | "notification_approver"
                 | "retention_period"
+                | "has_formal_owner"
+                | "is_approved_as"
         )
 }
 
@@ -556,7 +609,7 @@ fn is_terminal_state(status: Option<&str>) -> bool {
             .map(str::trim)
             .map(str::to_ascii_lowercase)
             .as_deref(),
-        Some("rejected" | "superseded" | "retired")
+        Some("rejected" | "superseded" | "retired" | "stale")
     )
 }
 
@@ -564,7 +617,7 @@ fn state_rank(status: Option<&str>) -> Option<usize> {
     match status?.trim().to_ascii_lowercase().as_str() {
         "active" | "approved" | "implemented" | "current" => Some(0),
         "proposed" | "draft" => Some(1),
-        "rejected" | "superseded" | "retired" => Some(2),
+        "rejected" | "superseded" | "retired" | "stale" => Some(2),
         _ => None,
     }
 }
@@ -814,6 +867,45 @@ mod tests {
     }
 
     #[test]
+    fn incident_claims_gain_the_matching_dedicated_section_as_evidence() {
+        let overview = PromptEvidence {
+            text: "恒久対策としてキュー滞留監視を追加する。".to_owned(),
+            heading_path: vec!["障害後レビュー".to_owned(), "概要".to_owned()],
+            ..prompt_evidence()
+        };
+        let dedicated = PromptEvidence {
+            evidence_id: "ev_permanent".to_owned(),
+            text: "恒久対策としてキュー滞留監視を追加する。".to_owned(),
+            heading_path: vec!["障害後レビュー".to_owned(), "恒久対策".to_owned()],
+            ..prompt_evidence()
+        };
+        let mut claim = candidate(EvidenceReference {
+            source_id: overview.source_id.clone(),
+            evidence_id: overview.evidence_id.clone(),
+        });
+        claim.subject = "監視メトリクスの反映遅延".to_owned();
+        claim.predicate = "permanent_remediation".to_owned();
+        claim.object = json!("キュー滞留監視の追加");
+        let response = ClaimExtractionResponse {
+            claims: vec![claim],
+            provider: "mock".to_owned(),
+            model: "fixed".to_owned(),
+            usage: fragarach_llm::LlmUsage::default(),
+        };
+
+        let validated = validate_extraction(response, &[overview, dedicated]);
+
+        assert_eq!(validated.claims.len(), 1);
+        assert_eq!(validated.claims[0].evidence.len(), 2);
+        assert!(
+            validated.claims[0]
+                .evidence
+                .iter()
+                .any(|reference| reference.evidence_id == "ev_permanent")
+        );
+    }
+
+    #[test]
     fn rejects_hallucinated_evidence_references() {
         let response = ClaimExtractionResponse {
             claims: vec![candidate(EvidenceReference {
@@ -990,6 +1082,40 @@ mod tests {
     }
 
     #[test]
+    fn formal_owner_is_a_single_valued_claim_slot() {
+        let mut missing = conflicting_claim("missing", "unspecified");
+        missing.predicate = "has_formal_owner".to_owned();
+        let mut assigned = conflicting_claim("assigned", "製品責任者");
+        assigned.predicate = "has_formal_owner".to_owned();
+
+        let analysis = analyze_conflicts(
+            &[missing, assigned],
+            &ConflictContext::default(),
+            &CompilationPolicy::default(),
+        );
+
+        assert_eq!(analysis.conflicts.len(), 1);
+    }
+
+    #[test]
+    fn approval_status_for_different_formal_capacities_is_not_a_conflict() {
+        let mut owner = conflicting_claim("owner", "false");
+        owner.predicate = "is_approved_as".to_owned();
+        owner.condition = Some("正式な問い合わせ責任者".to_owned());
+        let mut operator = conflicting_claim("operator", "true");
+        operator.predicate = "is_approved_as".to_owned();
+        operator.condition = Some("日常運用担当".to_owned());
+
+        let analysis = analyze_conflicts(
+            &[owner, operator],
+            &ConflictContext::default(),
+            &CompilationPolicy::default(),
+        );
+
+        assert!(analysis.conflicts.is_empty());
+    }
+
+    #[test]
     fn boolean_rule_details_become_conditions_instead_of_conflicting_values() {
         let mut first = ClaimCandidate {
             subject: "製品変更".to_owned(),
@@ -1070,6 +1196,22 @@ mod tests {
     }
 
     #[test]
+    fn status_facets_can_coexist_without_becoming_a_conflict() {
+        let mut lifecycle = conflicting_claim("lifecycle", "current");
+        lifecycle.predicate = "has_status".to_owned();
+        let mut approval = conflicting_claim("approval", "approved");
+        approval.predicate = "has_status".to_owned();
+
+        let analysis = analyze_conflicts(
+            &[lifecycle, approval],
+            &ConflictContext::default(),
+            &CompilationPolicy::default(),
+        );
+
+        assert!(analysis.conflicts.is_empty());
+    }
+
+    #[test]
     fn conditional_incident_commander_is_a_fallback_not_a_conflict() {
         let mut primary = conflicting_claim("primary", "運用マネージャー");
         primary.predicate = "incident_commander".to_owned();
@@ -1117,5 +1259,28 @@ mod tests {
 
         assert_eq!(analysis.conflicts[0].kind, ConflictKind::State);
         assert_eq!(analysis.conflicts[0].status, ConflictStatus::Resolved);
+    }
+
+    #[test]
+    fn stale_guidance_loses_to_a_current_claim_in_the_same_slot() {
+        let mut stale = conflicting_claim("stale", "2年間");
+        stale.status = Some("stale".to_owned());
+        let mut current = conflicting_claim("current", "5年間");
+        current.status = Some("current".to_owned());
+
+        let analysis = analyze_conflicts(
+            &[stale, current],
+            &ConflictContext::default(),
+            &CompilationPolicy::default(),
+        );
+
+        assert_eq!(analysis.conflicts[0].kind, ConflictKind::State);
+        assert_eq!(analysis.conflicts[0].status, ConflictStatus::Resolved);
+        assert!(
+            analysis.conflicts[0]
+                .resolution
+                .as_deref()
+                .is_some_and(|text| text.contains("current"))
+        );
     }
 }

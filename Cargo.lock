@@ -425,6 +425,7 @@ dependencies = [
  "fragarach-core",
  "fragarach-ir",
  "fragarach-llm",
+ "fragarach-resolver",
  "fragarach-workspace",
  "globset",
  "serde",
@@ -482,6 +483,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -492,6 +494,18 @@ dependencies = [
  "fragarach-ir",
  "sha2",
  "tempfile",
+]
+
+[[package]]
+name = "fragarach-resolver"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "fragarach-ir",
+ "fragarach-llm",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

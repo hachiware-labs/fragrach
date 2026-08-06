@@ -1,0 +1,19 @@
+id: compliance-audit
+goal: 対象日時点の正式規則、一覧の必須項目、未解決矛盾を監査可能な形で示す
+users:
+  - auditor
+  - quality-assurance-member
+tasks:
+  - 現行版と旧版を適用時点で区別する
+  - 正式標準と未更新FAQの矛盾を開示する
+  - 表の同一行をEvidence Bundleとして扱う
+  - 必須項目が空欄なら回答を控える
+questions:
+  - 対象日時点で有効な正式規則、適用期間、権威は何か
+  - 正式規則とFAQが競合する場合にどちらを優先するか
+  - 一覧の指定行に記載された責任者と状態は何か
+  - 指定行の必須項目が空欄の場合に何が不足しているか
+requirements:
+  evidence_required: true
+  temporal_scope_required: true
+  unresolved_conflicts_allowed: false

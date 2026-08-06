@@ -1,0 +1,16 @@
+{"source_id":"sources/08-amendment-chain/standard.md","fields":["role","force_level","approval","temporal"]}
+{"source_id":"sources/08-amendment-chain/amendment-a.md","fields":["role","force_level","approval","temporal"]}
+{"source_id":"sources/08-amendment-chain/amendment-b.md","fields":["role","force_level","approval","temporal"]}
+{"source_id":"sources/09-local-composition/global-policy.md","fields":["role","force_level","approval","temporal"]}
+{"source_id":"sources/09-local-composition/japan-policy.md","fields":["role","force_level","approval","scope","temporal"]}
+{"source_id":"sources/09-local-composition/nagoya-px8.md","fields":["role","force_level","approval","scope","temporal"]}
+{"source_id":"sources/10-emergency/base-standard.md","fields":["role","force_level","approval","temporal"]}
+{"source_id":"sources/10-emergency/emergency-order.md","fields":["role","force_level","approval","scope","temporal"]}
+{"source_id":"sources/10-emergency/notice-draft.md","fields":["role","approval","scope","temporal"]}
+{"source_id":"sources/11-record-lineage/original-register.md","fields":["role","force_level","approval","scope","temporal","official_record"]}
+{"source_id":"sources/11-record-lineage/corrected-register.md","fields":["role","force_level","approval","scope","temporal","official_record"]}
+{"source_id":"sources/11-record-lineage/export-copy.md","fields":["role","force_level","approval","scope","temporal","official_record"]}
+{"source_id":"sources/12-execution-lineage/policy.md","fields":["role","force_level","approval","temporal"]}
+{"source_id":"sources/12-execution-lineage/orion-procedure.md","fields":["role","force_level","approval","scope","temporal"]}
+{"source_id":"sources/12-execution-lineage/incident-log.md","fields":["role","force_level","approval","scope","temporal","official_record"]}
+{"source_id":"sources/12-execution-lineage/postmortem.md","fields":["role","force_level","approval","scope","temporal"]}

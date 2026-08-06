@@ -1,0 +1,104 @@
+{
+  "schema_version": "1.0",
+  "outline_id": "outline-8799df543c9b67f1",
+  "document_id": "ENT-FINANCE-COMPLIANCE-S1-GOVERNANCE-POL-V2",
+  "title": "取引監視と規制対応の重要変更承認規程 第2版",
+  "domain": "finance-compliance",
+  "purpose": "governance",
+  "document_type": "policy",
+  "target_chars": 6500,
+  "gold_anchor_placement": "deterministic-distributed",
+  "sections": [
+    {
+      "id": "context-01",
+      "kind": "generated_context",
+      "heading": "文書の目的と位置づけ",
+      "instruction": "この正式規程を参照する業務場面と、文書体系上の位置づけを説明する。",
+      "target_chars": 640
+    },
+    {
+      "id": "context-02",
+      "kind": "generated_context",
+      "heading": "制定・改訂の背景",
+      "instruction": "制度が必要になった業務背景を、確定事項を増やさずに説明する。",
+      "target_chars": 640
+    },
+    {
+      "id": "context-03",
+      "kind": "generated_context",
+      "heading": "対象業務の全体像",
+      "instruction": "対象業務の開始から記録までの一般的な流れを説明する。",
+      "target_chars": 640
+    },
+    {
+      "id": "context-04",
+      "kind": "generated_context",
+      "heading": "関係者の確認観点",
+      "instruction": "担当者、管理者、監査担当が文書を読むときの観点を説明する。",
+      "target_chars": 640
+    },
+    {
+      "id": "gold-01",
+      "kind": "gold_anchor",
+      "heading": "目的",
+      "anchor": "本規程は取引監視と規制対応の重要変更承認の現行要件を定める。",
+      "guidance": "統制目的を説明する。"
+    },
+    {
+      "id": "context-05",
+      "kind": "generated_context",
+      "heading": "用語の読み方",
+      "instruction": "本文で使う業務用語を一般的に説明し、固有の義務は追加しない。",
+      "target_chars": 640
+    },
+    {
+      "id": "gold-02",
+      "kind": "gold_anchor",
+      "heading": "現行規則",
+      "anchor": "2026年4月1日以降、取引監視と規制対応の重要変更承認は部門長と統制責任者の二者承認を得る。",
+      "guidance": "現行手続きを説明する。"
+    },
+    {
+      "id": "context-06",
+      "kind": "generated_context",
+      "heading": "関係文書との照合",
+      "instruction": "旧版、案内、承認記録を照合するときの一般的な手順を説明する。",
+      "target_chars": 640
+    },
+    {
+      "id": "context-07",
+      "kind": "generated_context",
+      "heading": "適用判断の注意",
+      "instruction": "対象、時点、版を取り違えないための読解上の注意を説明する。",
+      "target_chars": 640
+    },
+    {
+      "id": "gold-03",
+      "kind": "gold_anchor",
+      "heading": "旧版の扱い",
+      "anchor": "第2版は第1版を全面的に置き換える。",
+      "guidance": "旧版参照時の注意を書く。"
+    },
+    {
+      "id": "context-08",
+      "kind": "generated_context",
+      "heading": "記録とレビュー",
+      "instruction": "適用判断を後から確認できるようにする一般的な記録観点を説明する。",
+      "target_chars": 640
+    },
+    {
+      "id": "context-09",
+      "kind": "generated_context",
+      "heading": "改訂時の引継ぎ",
+      "instruction": "改訂時に利用者が確認すべき一般的な引継ぎ観点を説明する。",
+      "target_chars": 640
+    },
+    {
+      "id": "context-10",
+      "kind": "generated_context",
+      "heading": "検索・参照ガイド",
+      "instruction": "RAGや文書検索でこの規程を探す際の自然な語彙と参照順を説明する。",
+      "target_chars": 640
+    }
+  ]
+}

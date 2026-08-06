@@ -1,0 +1,17 @@
+id: commercial_compliance
+goal: 基本契約、個別契約、未署名提案、監査記録から対象別の契約義務を示す
+users:
+  - contract-manager
+  - procurement-member
+  - compliance-reviewer
+tasks:
+  - 対象範囲における文書優先順位を適用する
+  - 未署名提案を契約義務として扱わない
+  - 監査記録と契約条項を区別する
+questions:
+  - 対象業務へ適用する契約条件は何か
+  - 供給元提案は現在の契約義務か
+requirements:
+  evidence_required: true
+  temporal_scope_required: true
+  unresolved_conflicts_allowed: false

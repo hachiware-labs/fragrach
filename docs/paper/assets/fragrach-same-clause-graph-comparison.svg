@@ -1,0 +1,196 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1680" height="945" viewBox="0 0 1680 945" role="img" aria-labelledby="title desc">
+  <title id="title">Why the same clause number is difficult for a generic entity graph</title>
+  <desc id="desc">The left panel shows multiple documents with the same Section 4 label collapsing into one entity node. The right panel shows Fragrach retaining document identity, version, scope, time, role, and typed validity relations to resolve which documents are canonical, exceptions, historical, and records.</desc>
+
+  <defs>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#0b2a52" flood-opacity="0.10"/>
+    </filter>
+    <marker id="arrowNavy" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#244b77"/>
+    </marker>
+    <marker id="arrowTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#0c7c75"/>
+    </marker>
+    <marker id="arrowAmber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#c66a00"/>
+    </marker>
+    <marker id="arrowGray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#7b8796"/>
+    </marker>
+    <style>
+      .font { font-family: Inter, "Segoe UI", Arial, sans-serif; }
+      .title { font: 700 34px Inter, "Segoe UI", Arial, sans-serif; fill: #0b2a52; letter-spacing: 0.2px; }
+      .subtitle { font: 400 18px Inter, "Segoe UI", Arial, sans-serif; fill: #586577; }
+      .panelTitle { font: 700 23px Inter, "Segoe UI", Arial, sans-serif; fill: white; letter-spacing: 0.7px; }
+      .panelSub { font: 500 14px Inter, "Segoe UI", Arial, sans-serif; fill: #dce8f5; }
+      .docTitle { font: 700 17px Inter, "Segoe UI", Arial, sans-serif; fill: #172b49; }
+      .docText { font: 500 13px Inter, "Segoe UI", Arial, sans-serif; fill: #566477; }
+      .chip { font: 700 11px Inter, "Segoe UI", Arial, sans-serif; letter-spacing: 0.65px; }
+      .edge { font: 700 12px Inter, "Segoe UI", Arial, sans-serif; letter-spacing: 0.45px; }
+      .nodeTitle { font: 750 20px Inter, "Segoe UI", Arial, sans-serif; fill: #0b2a52; }
+      .nodeSub { font: 600 14px Inter, "Segoe UI", Arial, sans-serif; fill: #5a6675; }
+      .queryTitle { font: 750 14px Inter, "Segoe UI", Arial, sans-serif; fill: #0c6f69; letter-spacing: 0.8px; }
+      .queryChip { font: 650 13px Inter, "Segoe UI", Arial, sans-serif; fill: #23415f; }
+      .resultHead { font: 750 15px Inter, "Segoe UI", Arial, sans-serif; fill: #0c6f69; letter-spacing: 0.8px; }
+      .result { font: 650 14px Inter, "Segoe UI", Arial, sans-serif; fill: #1f3956; }
+      .bottomClaim { font: 750 22px Inter, "Segoe UI", Arial, sans-serif; fill: #0b2a52; letter-spacing: 0.5px; }
+      .note { font: 400 14px Inter, "Segoe UI", Arial, sans-serif; fill: #5b6877; }
+    </style>
+  </defs>
+
+  <rect width="1680" height="945" fill="#ffffff"/>
+  <text x="60" y="58" class="title">SAME CLAUSE NUMBER, DIFFERENT DOCUMENT VALIDITY</text>
+  <text x="60" y="91" class="subtitle">Entity connectivity can find related material; it does not by itself decide which document is operative.</text>
+
+  <!-- Left panel -->
+  <g filter="url(#shadow)">
+    <rect x="60" y="125" width="740" height="700" rx="16" fill="#fbfcfe" stroke="#b8c2cf" stroke-width="1.5"/>
+  </g>
+  <path d="M76 125 H784 Q800 125 800 141 V203 H60 V141 Q60 125 76 125 Z" fill="#173d69"/>
+  <text x="88" y="160" class="panelTitle">GENERIC ENTITY GRAPH</text>
+  <text x="88" y="185" class="panelSub">Document identity and validity semantics are not explicitly modeled</text>
+
+  <!-- Left document cards -->
+  <g>
+    <rect x="92" y="230" width="296" height="102" rx="10" fill="white" stroke="#9badc2" stroke-width="1.5"/>
+    <rect x="92" y="230" width="9" height="102" rx="4" fill="#7b8796"/>
+    <text x="119" y="258" class="docTitle">POLICY v1 · §4</text>
+    <text x="119" y="282" class="docText">Review deadline</text>
+    <rect x="119" y="296" width="112" height="22" rx="11" fill="#eef1f5"/>
+    <text x="175" y="311" text-anchor="middle" class="chip" fill="#657181">VALID TO 2025</text>
+
+    <rect x="92" y="350" width="296" height="102" rx="10" fill="white" stroke="#4a6f98" stroke-width="1.5"/>
+    <rect x="92" y="350" width="9" height="102" rx="4" fill="#244b77"/>
+    <text x="119" y="378" class="docTitle">POLICY v2 · §4</text>
+    <text x="119" y="402" class="docText">Review deadline</text>
+    <rect x="119" y="416" width="130" height="22" rx="11" fill="#e9f0f8"/>
+    <text x="184" y="431" text-anchor="middle" class="chip" fill="#244b77">VALID FROM 2026</text>
+
+    <rect x="92" y="470" width="296" height="102" rx="10" fill="white" stroke="#d28a2d" stroke-width="1.5"/>
+    <rect x="92" y="470" width="9" height="102" rx="4" fill="#c66a00"/>
+    <text x="119" y="498" class="docTitle">AMENDMENT A · §4</text>
+    <text x="119" y="522" class="docText">Emergency review deadline</text>
+    <rect x="119" y="536" width="101" height="22" rx="11" fill="#fff5e6"/>
+    <text x="169.5" y="551" text-anchor="middle" class="chip" fill="#a95b00">APPROVED</text>
+
+    <rect x="92" y="590" width="296" height="102" rx="10" fill="white" stroke="#0c7c75" stroke-width="1.5"/>
+    <rect x="92" y="590" width="9" height="102" rx="4" fill="#0c7c75"/>
+    <text x="119" y="618" class="docTitle">OSAKA EXCEPTION · §4</text>
+    <text x="119" y="642" class="docText">Local approval route</text>
+    <rect x="119" y="656" width="104" height="22" rx="11" fill="#e7f6f4"/>
+    <text x="171" y="671" text-anchor="middle" class="chip" fill="#0c6f69">SCOPE: OSAKA</text>
+  </g>
+
+  <!-- Collapsed entity node and edges -->
+  <g>
+    <path d="M388 281 C470 281 479 354 537 385" fill="none" stroke="#7b8796" stroke-width="2" marker-end="url(#arrowGray)"/>
+    <path d="M388 401 C469 401 482 408 537 410" fill="none" stroke="#244b77" stroke-width="2" marker-end="url(#arrowNavy)"/>
+    <path d="M388 521 C470 521 482 458 537 435" fill="none" stroke="#c66a00" stroke-width="2" marker-end="url(#arrowAmber)"/>
+    <path d="M388 641 C480 641 493 490 544 448" fill="none" stroke="#0c7c75" stroke-width="2" marker-end="url(#arrowTeal)"/>
+    <text x="449" y="270" class="edge" fill="#7b8796">MENTIONS</text>
+    <text x="449" y="394" class="edge" fill="#244b77">MENTIONS</text>
+    <text x="449" y="518" class="edge" fill="#c66a00">MENTIONS</text>
+    <text x="449" y="632" class="edge" fill="#0c7c75">MENTIONS</text>
+
+    <circle cx="626" cy="420" r="91" fill="#eef3f8" stroke="#173d69" stroke-width="3"/>
+    <text x="626" y="401" text-anchor="middle" class="nodeTitle">SECTION 4</text>
+    <text x="626" y="427" text-anchor="middle" class="nodeSub">Review deadline</text>
+    <text x="626" y="452" text-anchor="middle" class="nodeSub">one shared label</text>
+
+    <rect x="445" y="714" width="314" height="70" rx="12" fill="#fff1f1" stroke="#c73b3b" stroke-width="1.5" stroke-dasharray="7 5"/>
+    <text x="602" y="742" text-anchor="middle" class="font" font-size="16" font-weight="750" fill="#a82e2e">WHICH §4 APPLIES?</text>
+    <text x="602" y="766" text-anchor="middle" class="font" font-size="13.5" font-weight="600" fill="#8a5353">The entity label cannot decide.</text>
+  </g>
+
+  <!-- Center separation -->
+  <path d="M840 180 V778" stroke="#d1d8e1" stroke-width="2" stroke-dasharray="7 7"/>
+  <circle cx="840" cy="451" r="28" fill="#ffffff" stroke="#0c7c75" stroke-width="2"/>
+  <path d="M827 451 H853 M844 442 L853 451 L844 460" fill="none" stroke="#0c7c75" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Right panel -->
+  <g filter="url(#shadow)">
+    <rect x="880" y="125" width="740" height="700" rx="16" fill="#fbfefd" stroke="#9fc9c5" stroke-width="1.5"/>
+  </g>
+  <path d="M896 125 H1604 Q1620 125 1620 141 V203 H880 V141 Q880 125 896 125 Z" fill="#0c7c75"/>
+  <text x="908" y="160" class="panelTitle">FRAGRACH TYPED VALIDITY GRAPH</text>
+  <text x="908" y="185" class="panelSub">Document identity, clause lineage, scope, time, force, and role remain distinct</text>
+
+  <!-- Query context -->
+  <rect x="918" y="224" width="664" height="70" rx="12" fill="#e9f7f5" stroke="#83bbb6" stroke-width="1.3"/>
+  <text x="940" y="250" class="queryTitle">QUERY CONTEXT</text>
+  <g>
+    <rect x="940" y="261" width="139" height="22" rx="11" fill="white" stroke="#b5d8d4"/>
+    <text x="1009.5" y="276" text-anchor="middle" class="queryChip">as_of: 2026-08-01</text>
+    <rect x="1090" y="261" width="113" height="22" rx="11" fill="white" stroke="#b5d8d4"/>
+    <text x="1146.5" y="276" text-anchor="middle" class="queryChip">scope: Osaka</text>
+    <rect x="1214" y="261" width="90" height="22" rx="11" fill="white" stroke="#b5d8d4"/>
+    <text x="1259" y="276" text-anchor="middle" class="queryChip">clause: §4</text>
+    <rect x="1315" y="261" width="239" height="22" rx="11" fill="white" stroke="#b5d8d4"/>
+    <text x="1434.5" y="276" text-anchor="middle" class="queryChip">roles: normative + exception</text>
+  </g>
+
+  <!-- Typed nodes -->
+  <g>
+    <rect x="1124" y="420" width="270" height="104" rx="12" fill="#eaf7f5" stroke="#0c7c75" stroke-width="2.4"/>
+    <text x="1259" y="451" text-anchor="middle" class="docTitle">POLICY v2 · §4</text>
+    <text x="1259" y="476" text-anchor="middle" class="docText">normative · approved</text>
+    <text x="1259" y="499" text-anchor="middle" class="docText">valid from 2026</text>
+
+    <rect x="925" y="325" width="244" height="83" rx="10" fill="#fff8ec" stroke="#c66a00" stroke-width="1.8"/>
+    <text x="1047" y="354" text-anchor="middle" class="docTitle">AMENDMENT A · §4</text>
+    <text x="1047" y="378" text-anchor="middle" class="docText">approved amendment</text>
+    <text x="1047" y="396" text-anchor="middle" class="docText">emergency review</text>
+
+    <rect x="1421" y="325" width="164" height="83" rx="10" fill="#eef9f7" stroke="#0c7c75" stroke-width="1.8"/>
+    <text x="1503" y="354" text-anchor="middle" class="docTitle">OSAKA · §4</text>
+    <text x="1503" y="378" text-anchor="middle" class="docText">exception</text>
+
+    <rect x="925" y="553" width="244" height="83" rx="10" fill="#f1f3f6" stroke="#7b8796" stroke-width="1.6"/>
+    <text x="1047" y="582" text-anchor="middle" class="docTitle">POLICY v1 · §4</text>
+    <text x="1047" y="606" text-anchor="middle" class="docText">historical</text>
+    <text x="1047" y="624" text-anchor="middle" class="docText">valid to 2025</text>
+
+    <rect x="1421" y="553" width="164" height="83" rx="10" fill="#f3f6fa" stroke="#244b77" stroke-width="1.6"/>
+    <text x="1503" y="582" text-anchor="middle" class="docTitle">EXECUTION LOG</text>
+    <text x="1503" y="606" text-anchor="middle" class="docText">record</text>
+    <text x="1503" y="624" text-anchor="middle" class="docText">not a rule</text>
+  </g>
+
+  <!-- Typed edges -->
+  <g fill="none" stroke-width="2.2">
+    <path d="M1169 386 C1205 398 1216 408 1224 420" stroke="#c66a00" marker-end="url(#arrowAmber)"/>
+    <path d="M1421 386 C1387 398 1374 409 1363 420" stroke="#0c7c75" marker-end="url(#arrowTeal)"/>
+    <path d="M1184 524 C1146 544 1118 552 1102 558" stroke="#7b8796" marker-end="url(#arrowGray)"/>
+    <path d="M1421 584 C1405 560 1390 536 1372 516" stroke="#244b77" marker-end="url(#arrowNavy)"/>
+  </g>
+  <g>
+    <rect x="1129" y="390" width="92" height="20" rx="10" fill="#fff5e6"/>
+    <text x="1175" y="404" text-anchor="middle" class="edge" fill="#a95b00">AMENDS §4</text>
+
+    <rect x="1351" y="390" width="138" height="20" rx="10" fill="#e8f6f4"/>
+    <text x="1420" y="404" text-anchor="middle" class="edge" fill="#0c6f69">EXCEPTION_TO §4</text>
+
+    <rect x="1084" y="523" width="94" height="20" rx="10" fill="#eef1f5"/>
+    <text x="1131" y="537" text-anchor="middle" class="edge" fill="#66717f">SUPERSEDES</text>
+
+    <rect x="1390" y="523" width="169" height="20" rx="10" fill="#eaf0f7"/>
+    <text x="1474.5" y="537" text-anchor="middle" class="edge" fill="#244b77">RECORDS_EXECUTION_OF</text>
+  </g>
+
+  <!-- Resolved output -->
+  <rect x="918" y="678" width="664" height="109" rx="12" fill="#ffffff" stroke="#0c7c75" stroke-width="1.8"/>
+  <text x="940" y="705" class="resultHead">RESOLVED ROLES</text>
+  <rect x="940" y="717" width="294" height="26" rx="13" fill="#e7f6f4"/>
+  <text x="1087" y="735" text-anchor="middle" class="result">CANONICAL: Policy v2 + Amendment A</text>
+  <rect x="1244" y="717" width="176" height="26" rx="13" fill="#fff4e5"/>
+  <text x="1332" y="735" text-anchor="middle" class="result">EXCEPTION: Osaka</text>
+  <rect x="1430" y="717" width="130" height="26" rx="13" fill="#f0f2f5"/>
+  <text x="1495" y="735" text-anchor="middle" class="result">HISTORY: v1</text>
+  <rect x="940" y="751" width="620" height="24" rx="12" fill="#eef3f8"/>
+  <text x="1250" y="768" text-anchor="middle" class="result">EXECUTION LOG remains a RECORD — it does not become the operative rule</text>
+
+  <!-- Bottom claim -->
+  <text x="840" y="872" text-anchor="middle" class="bottomClaim">SAME CLAUSE LABEL ≠ SAME OPERATIVE DOCUMENT</text>
+  <text x="840" y="909" text-anchor="middle" class="note">A generic Graph RAG can handle this only when document identity, clause lineage, scope, time, force, and role are explicitly modeled.</text>
+</svg>

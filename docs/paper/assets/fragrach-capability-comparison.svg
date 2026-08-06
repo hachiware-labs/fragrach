@@ -1,0 +1,168 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1680" height="945" viewBox="0 0 1680 945" role="img" aria-labelledby="title desc">
+  <title id="title">Retrieval signals and document-validity responsibilities</title>
+  <desc id="desc">A conceptual capability matrix comparing BM25, vector stores, Graph RAG, and Fragrach. Retrieval methods specialize in keyword, semantic, or entity-path signals. Fragrach consumes their candidates and explicitly compiles document-validity relations such as versions, amendments, exceptions, canonical sources, execution records, conflicts, and decision provenance.</desc>
+
+  <defs>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#0b2a52" flood-opacity="0.10"/>
+    </filter>
+    <g id="primary">
+      <circle cx="0" cy="0" r="10" fill="#0b2a52"/>
+    </g>
+    <g id="possible">
+      <path d="M0,-11 L11,9 L-11,9 Z" fill="#fff8eb" stroke="#c66a00" stroke-width="3" stroke-linejoin="round"/>
+    </g>
+    <g id="outside">
+      <path d="M-11,0 H11" stroke="#7c8796" stroke-width="4" stroke-linecap="round"/>
+    </g>
+    <g id="compile">
+      <path d="M0,-12 L12,0 L0,12 L-12,0 Z" fill="#0c7c75"/>
+      <path d="M-5,0 L-1,5 L7,-5" fill="none" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <style>
+      .font { font-family: Inter, "Segoe UI", Arial, sans-serif; }
+      .title { font: 700 34px Inter, "Segoe UI", Arial, sans-serif; fill: #0b2a52; letter-spacing: 0.3px; }
+      .subtitle { font: 400 18px Inter, "Segoe UI", Arial, sans-serif; fill: #586577; }
+      .header { font: 700 22px Inter, "Segoe UI", Arial, sans-serif; fill: white; letter-spacing: 0.7px; }
+      .headerDark { font: 700 22px Inter, "Segoe UI", Arial, sans-serif; fill: #0b2a52; letter-spacing: 0.7px; }
+      .headSub { font: 500 14px Inter, "Segoe UI", Arial, sans-serif; fill: #d9e5f3; }
+      .headSubDark { font: 500 14px Inter, "Segoe UI", Arial, sans-serif; fill: #536274; }
+      .row { font: 650 17px Inter, "Segoe UI", Arial, sans-serif; fill: #172b49; letter-spacing: 0.25px; }
+      .group { font: 700 12px Inter, "Segoe UI", Arial, sans-serif; letter-spacing: 1.15px; }
+      .legend { font: 600 14px Inter, "Segoe UI", Arial, sans-serif; fill: #2c3f58; }
+      .note { font: 400 13.5px Inter, "Segoe UI", Arial, sans-serif; fill: #5d6876; }
+      .useBig { font: 750 19px Inter, "Segoe UI", Arial, sans-serif; fill: #0c6f69; letter-spacing: 0.6px; }
+      .useSmall { font: 600 14px Inter, "Segoe UI", Arial, sans-serif; fill: #397b77; }
+    </style>
+  </defs>
+
+  <rect width="1680" height="945" fill="#ffffff"/>
+
+  <text x="60" y="58" class="title">RETRIEVAL SIGNALS vs DOCUMENT VALIDITY</text>
+  <text x="60" y="91" class="subtitle">A conceptual responsibility map — not a performance scorecard</text>
+  <g transform="translate(1302 39)">
+    <rect width="288" height="46" rx="23" fill="#e9f6f4" stroke="#0c7c75" stroke-width="1.5"/>
+    <text x="144" y="29" text-anchor="middle" class="font" font-size="15" font-weight="700" fill="#0c6f69">FRAGRACH IS COMPLEMENTARY</text>
+  </g>
+
+  <!-- Table shell -->
+  <g filter="url(#shadow)">
+    <rect x="60" y="135" width="1530" height="660" rx="13" fill="white" stroke="#b8c2cf" stroke-width="1.5"/>
+  </g>
+
+  <!-- Header -->
+  <path d="M73 135 H450 V215 H60 V148 Q60 135 73 135 Z" fill="#e9eef5"/>
+  <rect x="450" y="135" width="285" height="80" fill="#0b2a52"/>
+  <rect x="735" y="135" width="285" height="80" fill="#173d69"/>
+  <rect x="1020" y="135" width="285" height="80" fill="#28547f"/>
+  <path d="M1305 135 H1577 Q1590 135 1590 148 V215 H1305 Z" fill="#0c7c75"/>
+
+  <text x="84" y="168" class="headerDark">INFORMATION TYPE</text>
+  <text x="84" y="193" class="headSubDark">What must be found or decided?</text>
+
+  <text x="592.5" y="167" text-anchor="middle" class="header">BM25</text>
+  <text x="592.5" y="192" text-anchor="middle" class="headSub">keyword retrieval</text>
+
+  <text x="877.5" y="167" text-anchor="middle" class="header">VECTOR STORE</text>
+  <text x="877.5" y="192" text-anchor="middle" class="headSub">semantic retrieval</text>
+
+  <text x="1162.5" y="167" text-anchor="middle" class="header">GRAPH RAG</text>
+  <text x="1162.5" y="192" text-anchor="middle" class="headSub">entity / path structure</text>
+
+  <text x="1447.5" y="167" text-anchor="middle" class="header">FRAGRACH</text>
+  <text x="1447.5" y="192" text-anchor="middle" class="headSub">document-validity compiler</text>
+
+  <!-- Row backgrounds: retrieval signals -->
+  <rect x="60" y="215" width="1530" height="58" fill="#fbfcfe"/>
+  <rect x="60" y="273" width="1530" height="58" fill="#f5f8fc"/>
+  <rect x="60" y="331" width="1530" height="58" fill="#fbfcfe"/>
+
+  <!-- Row backgrounds: document validity -->
+  <rect x="60" y="389" width="1530" height="58" fill="#f4fbfa"/>
+  <rect x="60" y="447" width="1530" height="58" fill="#ffffff"/>
+  <rect x="60" y="505" width="1530" height="58" fill="#f4fbfa"/>
+  <rect x="60" y="563" width="1530" height="58" fill="#ffffff"/>
+  <rect x="60" y="621" width="1530" height="58" fill="#f4fbfa"/>
+  <rect x="60" y="679" width="1530" height="58" fill="#ffffff"/>
+  <rect x="60" y="737" width="1530" height="58" fill="#f4fbfa"/>
+
+  <!-- Fragrach merged retrieval cell -->
+  <rect x="1305" y="215" width="285" height="174" fill="#eaf7f5"/>
+  <path d="M1371 258 C1371 238 1390 230 1407 239 C1419 217 1453 220 1461 244 C1481 237 1502 250 1502 271 C1502 292 1486 303 1467 303 H1402 C1384 303 1371 287 1371 270 Z" fill="none" stroke="#0c7c75" stroke-width="2.5"/>
+  <path d="M1413 316 H1480" stroke="#0c7c75" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M1467 307 L1480 316 L1467 325" fill="none" stroke="#0c7c75" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="1447.5" y="344" text-anchor="middle" class="useBig">USES CANDIDATES</text>
+  <text x="1447.5" y="367" text-anchor="middle" class="useSmall">FROM ANY RETRIEVER</text>
+
+  <!-- Fragrach validity cells -->
+  <rect x="1305" y="389" width="285" height="406" fill="#edf9f7" opacity="0.82"/>
+
+  <!-- Grid -->
+  <g stroke="#d4dbe4" stroke-width="1">
+    <path d="M450 135 V795 M735 135 V795 M1020 135 V795 M1305 135 V795"/>
+    <path d="M60 215 H1590 M60 273 H1305 M60 331 H1305 M60 389 H1590"/>
+    <path d="M60 447 H1590 M60 505 H1590 M60 563 H1590 M60 621 H1590 M60 679 H1590 M60 737 H1590"/>
+  </g>
+  <path d="M60 389 H1590" stroke="#0c7c75" stroke-width="3"/>
+
+  <!-- Group tags -->
+  <rect x="74" y="225" width="156" height="20" rx="10" fill="#e7edf5"/>
+  <text x="152" y="239" text-anchor="middle" class="group" fill="#35577e">RETRIEVAL SIGNAL</text>
+  <rect x="74" y="399" width="166" height="20" rx="10" fill="#dff3f0"/>
+  <text x="157" y="413" text-anchor="middle" class="group" fill="#0c716b">VALIDITY DECISION</text>
+
+  <!-- Row labels -->
+  <text x="84" y="262" class="row">KEYWORD MATCH</text>
+  <text x="84" y="320" class="row">SEMANTIC SIMILARITY</text>
+  <text x="84" y="378" class="row">ENTITY / PATH CONTEXT</text>
+  <text x="84" y="436" class="row">CURRENT vs OBSOLETE</text>
+  <text x="84" y="494" class="row">CLAUSE-LEVEL AMENDMENTS</text>
+  <text x="84" y="552" class="row">SCOPED EXCEPTIONS</text>
+  <text x="84" y="610" class="row">CANONICAL SOURCE vs COPY</text>
+  <text x="84" y="668" class="row">RULE vs EXECUTION RECORD</text>
+  <text x="84" y="726" class="row">UNRESOLVED CONFLICT / ABSTAIN</text>
+  <text x="84" y="784" class="row">DECISION → SOURCE PROVENANCE</text>
+
+  <!-- Retrieval signal symbols -->
+  <use href="#primary" x="592.5" y="244"/>
+  <use href="#possible" x="877.5" y="244"/>
+  <use href="#possible" x="1162.5" y="244"/>
+
+  <use href="#outside" x="592.5" y="302"/>
+  <use href="#primary" x="877.5" y="302"/>
+  <use href="#possible" x="1162.5" y="302"/>
+
+  <use href="#outside" x="592.5" y="360"/>
+  <use href="#possible" x="877.5" y="360"/>
+  <use href="#primary" x="1162.5" y="360"/>
+
+  <!-- Validity decision symbols -->
+  <g>
+    <use href="#possible" x="592.5" y="418"/><use href="#possible" x="877.5" y="418"/><use href="#possible" x="1162.5" y="418"/><use href="#compile" x="1447.5" y="418"/>
+    <use href="#possible" x="592.5" y="476"/><use href="#possible" x="877.5" y="476"/><use href="#possible" x="1162.5" y="476"/><use href="#compile" x="1447.5" y="476"/>
+    <use href="#possible" x="592.5" y="534"/><use href="#possible" x="877.5" y="534"/><use href="#possible" x="1162.5" y="534"/><use href="#compile" x="1447.5" y="534"/>
+    <use href="#possible" x="592.5" y="592"/><use href="#possible" x="877.5" y="592"/><use href="#possible" x="1162.5" y="592"/><use href="#compile" x="1447.5" y="592"/>
+    <use href="#possible" x="592.5" y="650"/><use href="#possible" x="877.5" y="650"/><use href="#possible" x="1162.5" y="650"/><use href="#compile" x="1447.5" y="650"/>
+    <use href="#outside" x="592.5" y="708"/><use href="#outside" x="877.5" y="708"/><use href="#possible" x="1162.5" y="708"/><use href="#compile" x="1447.5" y="708"/>
+    <use href="#possible" x="592.5" y="766"/><use href="#possible" x="877.5" y="766"/><use href="#possible" x="1162.5" y="766"/><use href="#compile" x="1447.5" y="766"/>
+  </g>
+
+  <!-- Legend -->
+  <g transform="translate(66 843)">
+    <use href="#primary" x="0" y="0"/>
+    <text x="22" y="5" class="legend">PRIMARY CAPABILITY</text>
+
+    <use href="#possible" x="245" y="0"/>
+    <text x="268" y="5" class="legend">POSSIBLE WITH EXTRA MODELING</text>
+
+    <use href="#outside" x="585" y="0"/>
+    <text x="607" y="5" class="legend">NOT A PRIMARY RESPONSIBILITY</text>
+
+    <use href="#compile" x="930" y="0"/>
+    <text x="954" y="5" class="legend">EXPLICIT COMPILE TARGET</text>
+  </g>
+
+  <path d="M60 875 H1590" stroke="#d9dfe7" stroke-width="1"/>
+  <text x="60" y="902" class="note">△ means the capability can be added through metadata, filters, schema design, or task-specific logic; it is not guaranteed by the retrieval method itself.</text>
+  <text x="60" y="926" class="note">Graph RAG can encode validity relations when explicitly modeled, but entity connectivity alone does not decide which document is operative for a given scope and time.</text>
+</svg>
