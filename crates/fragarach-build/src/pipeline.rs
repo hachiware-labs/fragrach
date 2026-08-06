@@ -521,6 +521,7 @@ pub fn compile_workspace(
     let mut document_relations =
         merge_front_matter_positions(&document_profiles, normalized.relations, &evidence);
     refine_stale_guidance_relations(&mut document_relations, &document_profiles, &claims);
+    complete_applicability_relation_coverage(&mut document_relations, &document_profiles);
     diagnostics.extend(
         validate_relations(&document_profiles, &document_relations)
             .into_iter()
@@ -821,17 +822,27 @@ pub fn recompile_build(options: &RecompileOptions) -> Result<CompileResult> {
     apply_corpus_hints(&corpus_settings, &mut evidence)?;
     refresh_claim_source_metadata(&mut claims, &evidence);
     let relations_path = options.input.join("document-relations.jsonl");
-    let document_relations: Vec<DocumentRelation> = if relations_path.exists() {
+    let had_relations_artifact = relations_path.exists();
+    let mut document_relations: Vec<DocumentRelation> = if had_relations_artifact {
         read_jsonl(&relations_path)?
     } else {
         Vec::new()
     };
     let profiles_path = options.input.join("document-profiles.jsonl");
-    let document_profiles: Vec<DocumentProfile> = if profiles_path.exists() {
+    let had_profiles_artifact = profiles_path.exists();
+    let mut document_profiles: Vec<DocumentProfile> = if had_profiles_artifact {
         read_jsonl(&profiles_path)?
     } else {
         Vec::new()
     };
+    apply_front_matter_to_profiles(&mut document_profiles, &evidence);
+    complete_applicability_relation_coverage(&mut document_relations, &document_profiles);
+    let relation_dossiers = build_relation_dossiers(
+        &intent.id,
+        &document_profiles,
+        &document_relations,
+        &evidence,
+    );
 
     let mut context = options.conflict_context.clone();
     if context.authority_precedence.is_empty() {
@@ -921,6 +932,31 @@ pub fn recompile_build(options: &RecompileOptions) -> Result<CompileResult> {
         &evidence,
         &mut discarded_artifacts,
     )?;
+    if had_profiles_artifact {
+        write_jsonl(
+            staging.path(),
+            "document_profiles",
+            "document-profiles.jsonl",
+            &document_profiles,
+            &mut discarded_artifacts,
+        )?;
+    }
+    if had_relations_artifact {
+        write_jsonl(
+            staging.path(),
+            "document_relations",
+            "document-relations.jsonl",
+            &document_relations,
+            &mut discarded_artifacts,
+        )?;
+        write_jsonl(
+            staging.path(),
+            "relation_dossiers",
+            "relation-dossiers.jsonl",
+            &relation_dossiers,
+            &mut discarded_artifacts,
+        )?;
+    }
     write_jsonl(
         staging.path(),
         "conflicts",
@@ -1012,9 +1048,9 @@ pub fn recompile_build(options: &RecompileOptions) -> Result<CompileResult> {
             profile_llm_calls: 0,
             profile_prompt_tokens: 0,
             profile_completion_tokens: 0,
-            document_profiles: old_manifest.metrics.document_profiles,
-            document_relations: old_manifest.metrics.document_relations,
-            relation_dossiers: old_manifest.metrics.relation_dossiers,
+            document_profiles: document_profiles.len(),
+            document_relations: document_relations.len(),
+            relation_dossiers: relation_dossiers.len(),
             llm_concurrency: old_manifest.metrics.llm_concurrency,
             llm_calls: 0,
             prompt_tokens: 0,
@@ -1956,6 +1992,119 @@ fn refine_stale_guidance_relations(
     }
 }
 
+fn complete_applicability_relation_coverage(
+    relations: &mut Vec<DocumentRelation>,
+    profiles: &[DocumentProfile],
+) {
+    let profile_by_id = profiles
+        .iter()
+        .map(|profile| (profile.source_id.as_str(), profile))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut covered_pairs = relations
+        .iter()
+        .filter(|relation| relation.kind == fragarach_ir::RelationKind::AppliesTo)
+        .map(|relation| (relation.source_id.clone(), relation.target_id.clone()))
+        .collect::<HashSet<_>>();
+    let mut additions = Vec::new();
+
+    for precedence in relations.iter() {
+        if precedence.kind != fragarach_ir::RelationKind::OrderOfPrecedence
+            || covered_pairs.contains(&(precedence.source_id.clone(), precedence.target_id.clone()))
+        {
+            continue;
+        }
+        let Some(source) = profile_by_id.get(precedence.source_id.as_str()) else {
+            continue;
+        };
+        let Some(target) = profile_by_id.get(precedence.target_id.as_str()) else {
+            continue;
+        };
+        if source.role != DocumentRole::Instruction
+            || target.role != DocumentRole::Instruction
+            || !source.force.approved
+            || !target.force.approved
+            || source.force.authority_rank >= target.force.authority_rank
+            || !scope_is_strict_refinement(&source.scope, &target.scope)
+            || !precedence
+                .evidence
+                .iter()
+                .any(|reference| reference.source_id == precedence.source_id)
+        {
+            continue;
+        }
+        covered_pairs.insert((precedence.source_id.clone(), precedence.target_id.clone()));
+
+        let key = format!(
+            "{}:{}:applies_to",
+            precedence.source_id, precedence.target_id
+        );
+        additions.push(DocumentRelation {
+            id: format!("coverage_{}", &sha256_hex(key.as_bytes())[..16]),
+            position: fragarach_ir::DocumentPosition::Conditional,
+            kind: fragarach_ir::RelationKind::AppliesTo,
+            source_id: precedence.source_id.clone(),
+            target_id: precedence.target_id.clone(),
+            source_clauses: precedence.source_clauses.clone(),
+            target_clauses: precedence.target_clauses.clone(),
+            scope: source.scope.clone(),
+            valid_from: precedence
+                .valid_from
+                .clone()
+                .or_else(|| source.time.valid_from.clone()),
+            valid_to: precedence
+                .valid_to
+                .clone()
+                .or_else(|| source.time.valid_to.clone()),
+            evidence: precedence.evidence.clone(),
+        });
+    }
+
+    relations.extend(additions);
+    relations.sort_by(|left, right| left.id.cmp(&right.id));
+}
+
+fn scope_is_strict_refinement(narrow: &ApplicabilityScope, broad: &ApplicabilityScope) -> bool {
+    let narrow_dimensions = scope_dimensions(narrow);
+    let broad_dimensions = scope_dimensions(broad);
+    let mut is_stricter = false;
+
+    for (narrow_values, broad_values) in narrow_dimensions
+        .into_iter()
+        .zip(broad_dimensions.into_iter())
+    {
+        if broad_values.is_empty() {
+            is_stricter |= !narrow_values.is_empty();
+            continue;
+        }
+        if narrow_values.is_empty()
+            || !narrow_values.iter().all(|narrow_value| {
+                broad_values
+                    .iter()
+                    .any(|broad_value| narrow_value.eq_ignore_ascii_case(broad_value))
+            })
+        {
+            return false;
+        }
+        is_stricter |= narrow_values.len() < broad_values.len();
+    }
+
+    is_stricter
+}
+
+fn scope_dimensions(scope: &ApplicabilityScope) -> [&[String]; 9] {
+    [
+        &scope.jurisdictions,
+        &scope.entities,
+        &scope.sites,
+        &scope.products,
+        &scope.assets,
+        &scope.persons,
+        &scope.projects,
+        &scope.lots,
+        &scope.contracts,
+    ]
+}
+
 fn relation_subjects_overlap(left: &str, right: &str) -> bool {
     let left = left.trim().to_lowercase();
     let right = right.trim().to_lowercase();
@@ -2673,14 +2822,15 @@ fn sha256_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::{
         CorpusSettings, apply_corpus_hints, checklist_completeness_diagnostics,
-        compact_profile_evidence, fallback_document_profile,
-        intent_requests_checklist_completeness, merge_front_matter_positions,
-        normalize_relation_endpoints, refine_stale_guidance_relations, relation_evidence_score,
-        select_relation_evidence, source_aware_batches,
+        compact_profile_evidence, complete_applicability_relation_coverage,
+        fallback_document_profile, intent_requests_checklist_completeness,
+        merge_front_matter_positions, normalize_relation_endpoints,
+        refine_stale_guidance_relations, relation_evidence_score, select_relation_evidence,
+        source_aware_batches,
     };
     use fragarach_ir::{
-        ApplicabilityScope, Claim, DocumentPosition, DocumentRelation, EvidenceReference,
-        IntentRequirements, RelationKind, UsageIntent,
+        ApplicabilityScope, Claim, DocumentPosition, DocumentRelation, DocumentRole,
+        EvidenceReference, IntentRequirements, RelationKind, UsageIntent,
     };
     use fragarach_llm::PromptEvidence;
 
@@ -3055,6 +3205,100 @@ mod tests {
                 .iter()
                 .any(|reference| reference.source_id == "register")
         );
+    }
+
+    #[test]
+    fn precedence_between_scoped_and_broader_instructions_completes_applies_to_coverage() {
+        let wi_evidence = evidence("wi", 0);
+        let procedure_evidence = evidence("procedure", 0);
+        let mut wi = fallback_document_profile("wi", std::slice::from_ref(&wi_evidence)).unwrap();
+        wi.role = DocumentRole::Instruction;
+        wi.force.approved = true;
+        wi.force.authority_rank = 7;
+        wi.scope.entities = vec!["白峰メディカル".to_owned()];
+        wi.scope.sites = vec!["神戸品質センター".to_owned()];
+        let mut procedure =
+            fallback_document_profile("procedure", std::slice::from_ref(&procedure_evidence))
+                .unwrap();
+        procedure.role = DocumentRole::Instruction;
+        procedure.force.approved = true;
+        procedure.force.authority_rank = 9;
+        procedure.scope.entities = wi.scope.entities.clone();
+        let precedence = DocumentRelation {
+            id: "precedence".to_owned(),
+            position: DocumentPosition::Dominates,
+            kind: RelationKind::OrderOfPrecedence,
+            source_id: "wi".to_owned(),
+            target_id: "procedure".to_owned(),
+            source_clauses: vec!["上位手順".to_owned()],
+            target_clauses: Vec::new(),
+            scope: ApplicabilityScope {
+                sites: wi.scope.sites.clone(),
+                ..ApplicabilityScope::default()
+            },
+            valid_from: None,
+            valid_to: None,
+            evidence: vec![EvidenceReference {
+                source_id: "wi".to_owned(),
+                evidence_id: wi_evidence.evidence_id,
+            }],
+        };
+        let mut duplicate_precedence = precedence.clone();
+        duplicate_precedence.id = "precedence-duplicate".to_owned();
+        let mut relations = vec![precedence, duplicate_precedence];
+
+        complete_applicability_relation_coverage(&mut relations, &[wi.clone(), procedure.clone()]);
+        complete_applicability_relation_coverage(&mut relations, &[wi, procedure]);
+
+        assert_eq!(relations.len(), 3);
+        let applies_to = relations
+            .iter()
+            .find(|relation| relation.kind == RelationKind::AppliesTo)
+            .unwrap();
+        assert_eq!(applies_to.position, DocumentPosition::Conditional);
+        assert_eq!(applies_to.scope.entities, vec!["白峰メディカル"]);
+        assert_eq!(applies_to.scope.sites, vec!["神戸品質センター"]);
+        assert_eq!(applies_to.source_clauses, vec!["上位手順"]);
+        assert_eq!(applies_to.evidence.len(), 1);
+    }
+
+    #[test]
+    fn precedence_does_not_complete_coverage_without_a_stricter_approved_instruction() {
+        let source_evidence = evidence("source", 0);
+        let target_evidence = evidence("target", 0);
+        let mut source =
+            fallback_document_profile("source", std::slice::from_ref(&source_evidence)).unwrap();
+        source.role = DocumentRole::Instruction;
+        source.force.approved = false;
+        source.force.authority_rank = 7;
+        source.scope.entities = vec!["白峰メディカル".to_owned()];
+        source.scope.sites = vec!["神戸品質センター".to_owned()];
+        let mut target =
+            fallback_document_profile("target", std::slice::from_ref(&target_evidence)).unwrap();
+        target.role = DocumentRole::Instruction;
+        target.force.approved = true;
+        target.force.authority_rank = 9;
+        target.scope.entities = source.scope.entities.clone();
+        let mut relations = vec![DocumentRelation {
+            id: "precedence".to_owned(),
+            position: DocumentPosition::Conditional,
+            kind: RelationKind::OrderOfPrecedence,
+            source_id: "source".to_owned(),
+            target_id: "target".to_owned(),
+            source_clauses: Vec::new(),
+            target_clauses: Vec::new(),
+            scope: source.scope.clone(),
+            valid_from: None,
+            valid_to: None,
+            evidence: vec![EvidenceReference {
+                source_id: "source".to_owned(),
+                evidence_id: source_evidence.evidence_id,
+            }],
+        }];
+
+        complete_applicability_relation_coverage(&mut relations, &[source, target]);
+
+        assert_eq!(relations.len(), 1);
     }
 
     #[test]

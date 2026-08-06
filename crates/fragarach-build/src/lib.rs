@@ -7,9 +7,9 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use fragarach_ir::{
-    Claim, CompilationPolicy, Conflict, ConflictKind, ConflictStatus, Diagnostic,
-    DiagnosticSeverity, DocumentProfile, DocumentRelation, DocumentRole, EvidenceReference,
-    ParsedDocument, RelationKind, UsageIntent,
+    ApplicabilityScope, Claim, CompilationPolicy, Conflict, ConflictKind, ConflictStatus,
+    Diagnostic, DiagnosticSeverity, DocumentProfile, DocumentRelation, DocumentRole,
+    EvidenceReference, ParsedDocument, RelationKind, UsageIntent,
 };
 use fragarach_llm::{ClaimCandidate, ClaimExtractionResponse, PromptEvidence};
 use sha2::{Digest, Sha256};
@@ -496,7 +496,43 @@ fn claim_objects_equivalent(left: &Claim, right: &Claim) -> bool {
         .zip(right.object.as_str())
         .is_some_and(|(left, right)| {
             normalized_scalar_value(left) == normalized_scalar_value(right)
+                || normalized_duration_constraint(left)
+                    .zip(normalized_duration_constraint(right))
+                    .is_some_and(|(left, right)| left == right)
         })
+}
+
+fn normalized_duration_constraint(value: &str) -> Option<String> {
+    let normalized = normalized_scalar_value(value);
+    for unit in ["営業日", "時間", "週間", "か月", "分", "日", "週"] {
+        let Some(unit_start) = normalized.find(unit) else {
+            continue;
+        };
+        let prefix = &normalized[..unit_start];
+        let digits_reversed = prefix
+            .chars()
+            .rev()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>();
+        if digits_reversed.is_empty() {
+            continue;
+        }
+        let digits = digits_reversed.chars().rev().collect::<String>();
+        let suffix = &normalized[unit_start + unit.len()..];
+        let bound = if suffix.starts_with("以内") || suffix.starts_with("まで") {
+            "maximum"
+        } else if suffix.starts_with("未満") {
+            "less_than"
+        } else if suffix.starts_with("以上") {
+            "minimum"
+        } else if suffix.starts_with("超") {
+            "greater_than"
+        } else {
+            continue;
+        };
+        return Some(format!("{digits}:{unit}:{bound}"));
+    }
+    None
 }
 
 fn normalized_scalar_value(value: &str) -> String {
@@ -722,9 +758,58 @@ fn source_is_governed_by(
             relation.kind == RelationKind::AppliesTo
                 && relation.source_id == source
                 && relation.target_id == base_source
-                && relation.scope == exception.scope
+                && scopes_compatible_for_override(&relation.scope, &exception.scope)
                 && relation_active_at(relation, as_of)
         })
+}
+
+fn scopes_compatible_for_override(
+    applicability: &ApplicabilityScope,
+    exception: &ApplicabilityScope,
+) -> bool {
+    let applicability_dimensions = scope_dimensions(applicability);
+    let exception_dimensions = scope_dimensions(exception);
+    if applicability_dimensions
+        .iter()
+        .all(|values| values.is_empty())
+    {
+        return true;
+    }
+
+    let mut has_shared_value = false;
+    for (applicability_values, exception_values) in applicability_dimensions
+        .into_iter()
+        .zip(exception_dimensions.into_iter())
+    {
+        if applicability_values.is_empty() || exception_values.is_empty() {
+            continue;
+        }
+        let overlaps = applicability_values.iter().any(|applicability_value| {
+            exception_values
+                .iter()
+                .any(|exception_value| applicability_value.eq_ignore_ascii_case(exception_value))
+        });
+        if !overlaps {
+            return false;
+        }
+        has_shared_value = true;
+    }
+
+    has_shared_value
+}
+
+fn scope_dimensions(scope: &ApplicabilityScope) -> [&[String]; 9] {
+    [
+        &scope.jurisdictions,
+        &scope.entities,
+        &scope.sites,
+        &scope.products,
+        &scope.assets,
+        &scope.persons,
+        &scope.projects,
+        &scope.lots,
+        &scope.contracts,
+    ]
 }
 
 fn non_effective_record_resolution(
@@ -1287,7 +1372,7 @@ mod tests {
     }
 
     #[test]
-    fn exception_applies_to_instruction_only_with_the_same_scope() {
+    fn exception_applies_to_instruction_with_a_compatible_narrower_scope() {
         let instruction = conflicting_claim("instruction", "一営業日以内");
         let exception = conflicting_claim("exception", "二時間以内");
         let mut exception_to = exception_relation("src_exception", "src_standard");
@@ -1298,6 +1383,9 @@ mod tests {
         applies_to.valid_from = Some("2026-04-01".to_owned());
         applies_to.valid_to = None;
         applies_to.scope = exception_to.scope.clone();
+        applies_to.scope.sites = vec!["神戸品質センター".to_owned()];
+        exception_to.scope.sites = applies_to.scope.sites.clone();
+        exception_to.scope.projects = vec!["QUALITY-REGULATORY-PR-1".to_owned()];
         let context = ConflictContext {
             as_of: NaiveDate::from_ymd_opt(2026, 7, 15),
             authority_precedence: Vec::new(),
@@ -1312,7 +1400,7 @@ mod tests {
         assert_eq!(resolved.conflicts[0].status, ConflictStatus::Resolved);
         assert_eq!(resolved.conflicts[0].kind, ConflictKind::ExplicitOverride);
 
-        applies_to.scope.entities = vec!["別組織".to_owned()];
+        applies_to.scope.sites = vec!["別拠点".to_owned()];
         let mismatched_scope = analyze_conflicts_with_relations(
             &[instruction, exception],
             &[exception_to, applies_to],
@@ -1412,6 +1500,20 @@ mod tests {
 
         let analysis = analyze_conflicts(
             &[written, numeric],
+            &ConflictContext::default(),
+            &CompilationPolicy::default(),
+        );
+
+        assert!(analysis.conflicts.is_empty());
+    }
+
+    #[test]
+    fn deadline_anchor_wording_does_not_create_a_false_conflict() {
+        let standard = conflicting_claim("standard", "一営業日以内");
+        let instruction = conflicting_claim("instruction", "受付後一営業日以内");
+
+        let analysis = analyze_conflicts(
+            &[standard, instruction],
             &ConflictContext::default(),
             &CompilationPolicy::default(),
         );

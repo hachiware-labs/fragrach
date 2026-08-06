@@ -16,10 +16,10 @@
 | 製品設計・planning | 12 | 9 | 1 | 1 |
 | 製品設計・operations | 12 | 9 | 2 | 2 |
 | 品質薬事・governance | 12 | 9 | 1 | 1 |
-| 品質薬事・operations | 12 | 9 | 4 | 3 |
-| 合計 | 60 | 45 | 10 | 9 |
+| 品質薬事・operations | 12 | 9 | 4 | 4 |
+| 合計 | 60 | 45 | 10 | 10 |
 
-したがって、現時点で確認した範囲は60文書、2業界・2部門、3用途に限られる。製品設計のgovernanceとplanningは抽出契約v4、製品設計のoperationsと品質薬事の2用途はv5で測定しており、単一契約版の全体性能を示す集計ではない。品質薬事operationsの4応答はすべて初回compileでProfile、Relation、Claimを保存したが、未解決Conflictを許可しないIntentの公開条件を満たさなかった。Conflict解析の修正後、3応答はLLMを再実行しないrecompileで公開でき、1応答は必要なRelation型が欠けたため失敗したままである。表の公開Buildは、この現行コードによる再コンパイル結果を含む。
+したがって、現時点で確認した範囲は60文書、2業界・2部門、3用途に限られる。製品設計のgovernanceとplanningは抽出契約v4、製品設計のoperationsと品質薬事の2用途はv5で測定しており、単一契約版の全体性能を示す集計ではない。品質薬事operationsの4応答はすべて初回compileでProfile、Relation、Claimを保存したが、未解決Conflictを許可しないIntentの公開条件を満たさなかった。その後、Conflict解析とRelation coverage passを修正し、LLMを再実行しないrecompileで4応答とも公開できた。表の公開Buildは、この現行コードによる再コンパイル結果を含む。
 
 ## governanceの結果
 
@@ -47,12 +47,15 @@ operationsのGold 9本は、`applies_to`、`exception_to`、`records_execution_o
 
 そこで3種類を`instruction`へ対応づけ、抽出契約v5で各Relationの成立条件を明示した。v5の二回のfresh実行は、Profile 12件のroleをすべて正しくコンパイルし、質問が要求する`exception_to`も両方3/3だった。一方、コーパス全体のGoldに対する結果は一致しなかった。
 
-| operations実行 | Gold一致 | 出力Relation | precision | recall |
-|---|---:|---:|---:|---:|
-| v5 fresh 1 | 5/9 | 7 | 71.4% | 55.6% |
-| v5 fresh 2 | 9/9 | 9 | 100% | 100% |
+| operations実行 | 初回Gold一致 | 現行Gold一致 | 現行出力Relation | 現行precision | 現行recall |
+|---|---:|---:|---:|---:|---:|
+| v4初回 | 3/9 | 5/9 | 10 | 50.0% | 55.6% |
+| v5 fresh 1 | 5/9 | 7/9 | 9 | 77.8% | 77.8% |
+| v5 fresh 2 | 9/9 | 9/9 | 9 | 100% | 100% |
 
-一回目は`records_execution_of`を2/3抽出し、`applies_to`は0/3だった。代わりに、本文が明示する`order_of_precedence`を2本出した。二回目は3種類を各3本抽出し、余分なRelationもなかった。同じ入力と設定で4本差があるため、成功した二回目だけを現行性能とはみなせない。質問必須Relationは安定しているが、背景グラフ全体の列挙はまだ非決定的である。
+v5の一回目は`records_execution_of`を2/3抽出し、`applies_to`は0/3だった。代わりに、本文が明示する`order_of_precedence`を2本出した。現行のcoverage passは、この優先関係を削除せず、両端が承認済みInstruction、権限が下位から上位、source scopeがtarget scopeの厳密な細分化、source側Evidenceがある、という条件をすべて満たす場合だけ`applies_to`も補完する。この再コンパイルによりv5の一回目は7/9まで改善した。v4の保存Profileもfront matterを現行規則で再適用してroleを直したため、3/9から5/9になった。v5の二回目は3種類を各3本抽出しており、補完による変更はなかった。
+
+これらは保存済みLLM応答を現行の決定的処理へ通した結果であり、fresh抽出自体が安定したことを示さない。同じ入力と設定で生のRelation列挙が揺れる問題は残るが、二つの部門で同じ限定条件の補完が働き、正しいRelationを失う退行は確認されなかった。
 
 ## 品質薬事部へ広げた結果
 
@@ -82,30 +85,34 @@ Conflict解析を修正し、基準日時点で有効な`exception_to`の両端�
 | 追加operations実行 | Gold一致 | 出力Relation | precision | recall | 初回未解決Conflict | 現行コードでの公開 |
 |---|---:|---:|---:|---:|---:|---|
 | 品質薬事 fresh 3 | 8/9 | 8 | 100% | 88.9% | 2 | recompileで成功 |
-| 品質薬事 fresh 4 | 5/9 | 8 | 62.5% | 55.6% | 2 | 失敗 |
+| 品質薬事 fresh 4 | 8/9 | 11 | 72.7% | 88.9% | 2 | recompileで成功 |
 
-fresh 3は`exception_to`と`applies_to`を各3/3、`records_execution_of`を2/3抽出した。初回compile後に条件分岐と数字表記の規則を追加したため、保存済み応答をrecompileし、未解決Conflict 2→0で公開できた。fresh 4は質問必須の`exception_to`を3/3、`records_execution_of`を2/3抽出したが、`applies_to`は0/3だった。代わりに現場指示から手順への`order_of_precedence`を3本出した。この関係を`applies_to`と同一視すると意味を広げすぎるため、現行Conflict解析では例外を現場指示へ伝播せず、2件を未解決に残して公開を拒否した。
+fresh 3は`exception_to`と`applies_to`を各3/3、`records_execution_of`を2/3抽出した。初回compile後に条件分岐と数字表記の規則を追加したため、保存済み応答をrecompileし、未解決Conflict 2→0で公開できた。
 
-4回の品質薬事operations応答を通じて、質問必須の`exception_to`は2/3、2/3、3/3、3/3と改善したが、全Relationの厳密一致は7/9、7/9、8/9、5/9と揺れた。正しいRelationが得られた応答を安全に利用する経路は改善した一方、完全fresh実行の公開安定性はRelation分類の再現率に制約されている。
+fresh 4の生応答は、質問必須の`exception_to`を3/3、`records_execution_of`を2/3抽出したが、`applies_to`は0/3だった。代わりに現場指示から手順への`order_of_precedence`を3本出した。coverage passで前節と同じ限定条件を検証すると、3組とも適用関係を併存できると判断でき、Gold一致は5/9から8/9になった。元の優先関係3本は原文根拠があるため保持しており、Goldを完全な正例集合としたprecisionは72.7%となる。
+
+この補完後も、全社手順の「一営業日以内」と現場指示の「受付後一営業日以内」を異なる期限とみなす偽Conflictが1件残った。そこで、期限値を起点文言から切り離し、数値・単位・上限または下限として正規化した。最終的にfresh 4はLLM呼び出し0のrecompileで未解決Conflict 2→0となり、`completed_with_warnings`で公開できた。
+
+4回の品質薬事operations応答を通じて、質問必須の`exception_to`は2/3、2/3、3/3、3/3と改善した。生応答の全Relation厳密一致は7/9、7/9、8/9、5/9と揺れたが、現行recompileでは最後の応答を8/9まで補完し、4応答すべてを公開できた。正しいRelationを安全に利用する経路と、限定条件下の分類揺れを吸収する経路は改善したが、端点誤りや列挙漏れは補完していない。
 
 ## 現時点の判断
 
-製品設計部のgovernance 12文書では、今回の修正により既知のRelation欠落を再現可能な形で解消した。一方、品質薬事部ではgovernanceが7/9、operationsが5/9から8/9となり、同じ関係型でも部門横断の再現率はまだ十分ではない。operationsのProfile roleは両部門で正しくなり、正当な期限付き例外と実施記録を偽の未解決Conflictにする問題は限定条件付きで解消した。しかし、Relation端点のコピー誤り、列挙漏れ、`applies_to`と`order_of_precedence`の分類揺れは残る。
+製品設計部のgovernance 12文書では、今回の修正により既知のRelation欠落を再現可能な形で解消した。operationsのcoverage passは製品設計と品質薬事の両方で働き、保存応答の分類揺れを限定条件付きで補完できた。正当な期限付き例外と実施記録を偽の未解決Conflictにする問題も、対象の4応答では解消した。一方、品質薬事governanceは7/9に留まり、Relation端点のコピー誤りと列挙漏れも残るため、部門横断の再現率が十分とはいえない。
 
 確認済みデータは60文書まで増えたが、全2,880文書の一部にすぎず、Vanilla RAGを上回ったとは判断できない。今回測ったのもコンパイル段階だけであり、検索順位、必要根拠の回収、最終回答の正しさは別に評価する必要がある。
 
-次の修正単位では、Relation候補ごとの抽出または検証可能なcoverage passを設け、端点コピー、列挙漏れ、`applies_to`と`order_of_precedence`の分類を独立に検証する。Conflict解決側で曖昧なRelation型を読み替えて公開を通す方法は採らない。planningについては、Relation型を増やす前にGold Relationが原文から追跡できるよう、文書IDまたは明示的な参照をSourceへ加えるべきかを判断する。
+次は、同じcoverage passを業界・部門・用途の異なるデータへ広げ、補完条件のprecisionを測る。そのうえで、まだ未対応の端点コピーと列挙漏れをRelation候補単位で検証する。Conflict解決側で曖昧なRelation型を無条件に読み替える方法は採らない。planningについては、Relation型を増やす前にGold Relationが原文から追跡できるよう、文書IDまたは明示的な参照をSourceへ加えるべきかを判断する。
 
 ## 実行記録
 
 - governance初回応答と現行コードでの再処理: `target/benchmarks/enterprise-domain-actual/2026-08-06-relation-v4-manufacturing-product-design-governance-luna-v1/knowledge-build-refined-v2/`
 - governance fresh再実行: `target/benchmarks/enterprise-domain-actual/2026-08-06-relation-v4-manufacturing-product-design-governance-luna-v2/`
 - planning fresh実行と型修正後の再処理: `target/benchmarks/enterprise-domain-actual/2026-08-06-relation-v4-manufacturing-product-design-planning-luna-v1/knowledge-build-refined/`
-- operations v4初回: `target/benchmarks/enterprise-domain-actual/2026-08-06-relation-v4-manufacturing-product-design-operations-luna-v1/`
-- operations v5 fresh 1: `target/benchmarks/enterprise-domain-actual/2026-08-06-relation-v5-manufacturing-product-design-operations-luna-v2/`
+- operations v4初回と現行recompile: `target/benchmarks/enterprise-domain-actual/2026-08-06-relation-v4-manufacturing-product-design-operations-luna-v1/knowledge-build-recompiled-coverage-v2/`
+- operations v5 fresh 1と現行recompile: `target/benchmarks/enterprise-domain-actual/2026-08-06-relation-v5-manufacturing-product-design-operations-luna-v2/knowledge-build-recompiled-coverage-v1/`
 - operations v5 fresh 2: `target/benchmarks/enterprise-domain-actual/2026-08-06-relation-v5-manufacturing-product-design-operations-luna-v3/`
 - 品質薬事 governance v5 fresh: `target/benchmarks/enterprise-domain-actual/2026-08-06-relation-v5-healthcare-quality-regulatory-governance-luna-v1/`
 - 品質薬事 operations v5 fresh 1（failed-build保存）: `target/benchmarks/enterprise-domain-actual/2026-08-06-relation-v5-healthcare-quality-regulatory-operations-luna-v1/`
 - 品質薬事 operations v5 fresh 2（failed-build保存）: `target/benchmarks/enterprise-domain-actual/2026-08-06-relation-v5-healthcare-quality-regulatory-operations-luna-v2/`
 - 品質薬事 operations v6 fresh 3とrecompile成功: `target/benchmarks/enterprise-domain-actual/2026-08-06-relation-v6-healthcare-quality-regulatory-operations-luna-v3/`
-- 品質薬事 operations v6 fresh 4（Relation分類不足によりfailed-build保存）: `target/benchmarks/enterprise-domain-actual/2026-08-06-relation-v6-healthcare-quality-regulatory-operations-luna-v4/`
+- 品質薬事 operations v6 fresh 4とcoverage pass後のrecompile成功: `target/benchmarks/enterprise-domain-actual/2026-08-06-relation-v6-healthcare-quality-regulatory-operations-luna-v4/knowledge-build-recompiled-coverage-v2/`
