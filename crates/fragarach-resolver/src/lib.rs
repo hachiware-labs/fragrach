@@ -371,6 +371,10 @@ impl DocumentResolver for RelationGraphResolver {
                         relation,
                     );
                 }
+                RelationKind::Approves => {
+                    append_relation_path(&mut outcome.decisions[source_index], relation);
+                    append_relation_path(&mut outcome.decisions[target_index], relation);
+                }
                 RelationKind::RecordsExecutionOf => {
                     set_decision(
                         &mut outcome.decisions[source_index],
@@ -986,6 +990,59 @@ mod tests {
             Disposition::ExecutionRecord
         );
         assert_eq!(outcome.decisions[1].disposition, Disposition::Canonical);
+    }
+
+    #[test]
+    fn approval_relation_links_the_record_without_claiming_execution() {
+        let profiles = vec![
+            profile("approval", DocumentRole::Record, 8),
+            profile("policy", DocumentRole::Normative, 7),
+        ];
+        let candidates = vec![
+            ResolutionCandidate {
+                source_id: "approval".to_owned(),
+                relevance: 0.90,
+            },
+            ResolutionCandidate {
+                source_id: "policy".to_owned(),
+                relevance: 0.85,
+            },
+        ];
+        let relation = DocumentRelation {
+            id: "rel-approval".to_owned(),
+            position: fragarach_ir::DocumentPosition::NonEffective,
+            kind: RelationKind::Approves,
+            source_id: "approval".to_owned(),
+            target_id: "policy".to_owned(),
+            source_clauses: Vec::new(),
+            target_clauses: Vec::new(),
+            scope: ApplicabilityScope::default(),
+            valid_from: None,
+            valid_to: None,
+            evidence: Vec::new(),
+        };
+        let context = ResolutionContext {
+            intent_id: "governance".to_owned(),
+            as_of: Some("2026-08-01".to_owned()),
+            requested_roles: vec![DocumentRole::Normative],
+            requested_clauses: Vec::new(),
+            scope: ApplicabilityScope::default(),
+        };
+
+        let outcome = RelationGraphResolver.resolve(&context, &candidates, &profiles, &[relation]);
+
+        assert_eq!(
+            outcome.decisions[0].disposition,
+            Disposition::ExecutionRecord
+        );
+        assert_eq!(outcome.decisions[1].disposition, Disposition::Canonical);
+        assert_eq!(outcome.decisions[0].relation_path, vec!["rel-approval"]);
+        assert_eq!(outcome.decisions[1].relation_path, vec!["rel-approval"]);
+        assert!(
+            !outcome.decisions[0]
+                .reasons
+                .contains(&DecisionReason::ExecutionEvidence)
+        );
     }
 
     #[test]

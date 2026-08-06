@@ -487,7 +487,7 @@ fn predicate_requires_matching_condition(predicate: &str) -> bool {
     )
 }
 
-fn predicate_is_single_valued(predicate: &str) -> bool {
+pub(crate) fn predicate_is_single_valued(predicate: &str) -> bool {
     let predicate = predicate.trim().to_ascii_lowercase();
     if predicate == "has_status" {
         return false;
@@ -500,7 +500,8 @@ fn predicate_is_single_valued(predicate: &str) -> bool {
     .any(|marker| predicate == *marker || predicate.contains(&format!("_{marker}")))
         || matches!(
             predicate.as_str(),
-            "requires_review"
+            "requires_approval"
+                | "requires_review"
                 | "allows_self_approval"
                 | "access_approver"
                 | "incident_commander"

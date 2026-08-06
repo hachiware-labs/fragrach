@@ -42,7 +42,7 @@ const PREDICATE_CATALOG: &[&str] = &[
 
 const OLLAMA_CONTEXT_LENGTH: u64 = 32 * 1024;
 pub const CLAIM_EXTRACTION_CONTRACT_VERSION: &str = "claim-extraction-v1";
-pub const DOCUMENT_PROFILE_CONTRACT_VERSION: &str = "document-position-extraction-v3";
+pub const DOCUMENT_PROFILE_CONTRACT_VERSION: &str = "document-position-extraction-v4";
 
 pub fn claim_extraction_contract_fingerprint() -> String {
     let sentinel = ClaimExtractionRequest {
@@ -596,13 +596,22 @@ fn document_profile_extraction_prompt(
          Relation kind is supporting detail retained with the source chunks. Use operational_position when\n\
          the evidence decides a position but does not require a more specific relation kind. This is the\n\
          normal kind for non_effective documents. Other kinds are limited to supersedes,\n\
-         amends, applies_to, exception_to, conflicts_with,\n\
+         amends, applies_to, exception_to, conflicts_with, approves,\n\
          records_execution_of, order_of_precedence, and derived_from. Emit a relation only when the evidence\n\
          explicitly supports it. conflicts_with means that two documents state incompatible values or rules;\n\
          emit it even when authority, time, or lifecycle metadata later allows deterministic resolution.\n\
+         approves means that an approval or decision record explicitly authorizes the target document, plan,\n\
+         or revision. Use non_effective position for the approval record unless the evidence supports another\n\
+         position. Do not use records_execution_of for authorization; reserve it for evidence that an approved\n\
+         action was actually performed or applied.\n\
          Relations are not mutually exclusive. When stale guidance states a value incompatible with a formal\n\
          policy and the policy also has precedence, emit both conflicts_with and order_of_precedence for that\n\
          document pair, each with its own exact evidence.\n\
+         Before returning, enumerate relation candidates independently for every source: explicit successors,\n\
+         approval or decision records with named targets, stale communications with rules or values that differ\n\
+         from an applicable normative source, and execution records with named actions. operational_position\n\
+         never replaces an evidenced conflicts_with relation. Section-planning or drafting boilerplate such as\n\
+         'this section describes precedence' is not itself an operative order_of_precedence statement.\n\
          For amends and order_of_precedence, preserve the affected clauses. Never infer a whole-document\n\
          replacement from a clause amendment. If one document explicitly says it is an uncontrolled copy\n\
          and another document is the controlled system-of-record entry for the same asset, emit derived_from\n\
@@ -703,7 +712,7 @@ fn document_profile_response_schema() -> Value {
                     "properties": {
                         "id": {"type": "string", "minLength": 1},
                         "position": {"type": "string", "enum": ["dominates", "conditional", "non_effective", "unresolved"]},
-                        "kind": {"type": "string", "enum": ["operational_position", "supersedes", "amends", "applies_to", "exception_to", "conflicts_with", "records_execution_of", "order_of_precedence", "derived_from"]},
+                        "kind": {"type": "string", "enum": ["operational_position", "supersedes", "amends", "applies_to", "exception_to", "conflicts_with", "approves", "records_execution_of", "order_of_precedence", "derived_from"]},
                         "source_id": {"type": "string", "minLength": 1},
                         "target_id": {"type": "string", "minLength": 1},
                         "source_clauses": {"type": "array", "items": {"type": "string"}},
@@ -832,6 +841,13 @@ mod tests {
                 .iter()
                 .any(|kind| kind == "conflicts_with")
         );
+        assert!(
+            schema["properties"]["relations"]["items"]["properties"]["kind"]["enum"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|kind| kind == "approves")
+        );
         assert_eq!(
             schema["properties"]["relations"]["items"]["properties"]["position"]["enum"]
                 .as_array()
@@ -839,6 +855,18 @@ mod tests {
                 .len(),
             4
         );
+    }
+
+    #[test]
+    fn document_profile_prompt_distinguishes_approval_from_execution() {
+        let prompt = document_profile_extraction_prompt(&DocumentProfileExtractionRequest {
+            evidence: Vec::new(),
+        })
+        .unwrap();
+
+        assert!(prompt.contains("approves means"));
+        assert!(prompt.contains("Do not use records_execution_of for authorization"));
+        assert!(prompt.contains("never replaces an evidenced conflicts_with relation"));
     }
 
     #[test]

@@ -276,6 +276,7 @@ pub enum RelationKind {
     AppliesTo,
     ExceptionTo,
     ConflictsWith,
+    Approves,
     RecordsExecutionOf,
     OrderOfPrecedence,
     DerivedFrom,

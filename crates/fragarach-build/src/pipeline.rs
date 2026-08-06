@@ -518,8 +518,9 @@ pub fn compile_workspace(
     );
     let mut document_profiles = normalized.profiles;
     apply_front_matter_to_profiles(&mut document_profiles, &evidence);
-    let document_relations =
+    let mut document_relations =
         merge_front_matter_positions(&document_profiles, normalized.relations, &evidence);
+    refine_stale_guidance_relations(&mut document_relations, &document_profiles, &claims);
     diagnostics.extend(
         validate_relations(&document_profiles, &document_relations)
             .into_iter()
@@ -1546,6 +1547,10 @@ fn validate_profile_extraction(
     let relations = response
         .relations
         .into_iter()
+        .map(|mut relation| {
+            normalize_relation_endpoints(&mut relation, &profiles);
+            relation
+        })
         .filter(|relation| {
             let endpoints = relation.source_id != relation.target_id
                 && profile_ids.contains(relation.source_id.as_str())
@@ -1581,6 +1586,27 @@ fn validate_profile_extraction(
         relations,
         diagnostics,
     }
+}
+
+fn normalize_relation_endpoints(relation: &mut DocumentRelation, profiles: &[DocumentProfile]) {
+    relation.source_id = normalize_relation_endpoint(&relation.source_id, profiles);
+    relation.target_id = normalize_relation_endpoint(&relation.target_id, profiles);
+}
+
+fn normalize_relation_endpoint(endpoint: &str, profiles: &[DocumentProfile]) -> String {
+    if profiles.iter().any(|profile| profile.source_id == endpoint) {
+        return endpoint.to_owned();
+    }
+    let mut matches = profiles
+        .iter()
+        .filter(|profile| profile.document_id.as_deref() == Some(endpoint));
+    let Some(profile) = matches.next() else {
+        return endpoint.to_owned();
+    };
+    if matches.next().is_some() {
+        return endpoint.to_owned();
+    }
+    profile.source_id.clone()
 }
 
 fn fallback_document_profile(
@@ -1846,6 +1872,77 @@ fn merge_front_matter_positions(
     compiled
 }
 
+fn refine_stale_guidance_relations(
+    relations: &mut [DocumentRelation],
+    profiles: &[DocumentProfile],
+    claims: &[Claim],
+) {
+    for relation in relations {
+        if relation.kind != fragarach_ir::RelationKind::OperationalPosition
+            || relation.position != fragarach_ir::DocumentPosition::NonEffective
+        {
+            continue;
+        }
+        let Some(source) = profiles
+            .iter()
+            .find(|profile| profile.source_id == relation.source_id)
+        else {
+            continue;
+        };
+        let Some(target) = profiles
+            .iter()
+            .find(|profile| profile.source_id == relation.target_id)
+        else {
+            continue;
+        };
+        if source.role != DocumentRole::Communication
+            || target.role != DocumentRole::Normative
+            || !target.force.approved
+        {
+            continue;
+        }
+        let source_claims = claims.iter().filter(|claim| {
+            claim
+                .evidence
+                .iter()
+                .any(|reference| reference.source_id == source.source_id)
+        });
+        let target_claims = claims
+            .iter()
+            .filter(|claim| {
+                claim
+                    .evidence
+                    .iter()
+                    .any(|reference| reference.source_id == target.source_id)
+            })
+            .collect::<Vec<_>>();
+        let has_incompatible_value = source_claims.into_iter().any(|left| {
+            crate::predicate_is_single_valued(&left.predicate)
+                && target_claims.iter().any(|right| {
+                    left.predicate
+                        .trim()
+                        .eq_ignore_ascii_case(right.predicate.trim())
+                        && left.object != right.object
+                        && relation_subjects_overlap(&left.subject, &right.subject)
+                })
+        });
+        if has_incompatible_value {
+            relation.kind = fragarach_ir::RelationKind::ConflictsWith;
+        }
+    }
+}
+
+fn relation_subjects_overlap(left: &str, right: &str) -> bool {
+    let left = left.trim().to_lowercase();
+    let right = right.trim().to_lowercase();
+    left == right
+        || (left.chars().count().min(right.chars().count()) >= 4
+            && (left.starts_with(&right)
+                || right.starts_with(&left)
+                || left.ends_with(&right)
+                || right.ends_with(&left)))
+}
+
 fn role_from_document_type(document_type: &str) -> DocumentRole {
     match document_type {
         "policy" | "standard" | "master_contract" | "specification" | "amendment" => {
@@ -1854,9 +1951,11 @@ fn role_from_document_type(document_type: &str) -> DocumentRole {
         "procedure" | "site_work_instruction" | "implementation_plan" | "sow" => {
             DocumentRole::Instruction
         }
-        "approval_record" | "decision_record" | "test_record" | "execution_log"
-        | "release_record" | "audit_record" | "final_report" => DocumentRole::Record,
-        "analysis" | "initial_report" => DocumentRole::Analysis,
+        "approval_record" | "decision_record" | "decision_minutes" | "test_record"
+        | "execution_log" | "release_record" | "audit_record" | "final_report" => {
+            DocumentRole::Record
+        }
+        "analysis" | "options_analysis" | "initial_report" => DocumentRole::Analysis,
         "proposal" | "draft" | "vendor_proposal" | "change_request" => DocumentRole::Proposal,
         "faq" => DocumentRole::Communication,
         _ => DocumentRole::Reference,
@@ -2135,7 +2234,8 @@ fn relation_evidence_score(relation: &DocumentRelation, item: &PromptEvidence) -
             "食い違",
             "矛盾",
         ],
-        "records_execution_of" => &["決定", "承認", "実施", "記録"],
+        "approves" => &["承認", "決定", "採用", "施行", "対象"],
+        "records_execution_of" => &["実施", "実行", "適用", "完了", "記録"],
         "amends" => &["改訂", "修正", "変更", "条", "節"],
         "exception_to" => &["例外", "逸脱", "免除", "限定"],
         _ => &["適用", "由来", "参照", "関係"],
@@ -2547,10 +2647,11 @@ mod tests {
         CorpusSettings, apply_corpus_hints, checklist_completeness_diagnostics,
         compact_profile_evidence, fallback_document_profile,
         intent_requests_checklist_completeness, merge_front_matter_positions,
-        relation_evidence_score, select_relation_evidence, source_aware_batches,
+        normalize_relation_endpoints, refine_stale_guidance_relations, relation_evidence_score,
+        select_relation_evidence, source_aware_batches,
     };
     use fragarach_ir::{
-        ApplicabilityScope, DocumentPosition, DocumentRelation, EvidenceReference,
+        ApplicabilityScope, Claim, DocumentPosition, DocumentRelation, EvidenceReference,
         IntentRequirements, RelationKind, UsageIntent,
     };
     use fragarach_llm::PromptEvidence;
@@ -2733,6 +2834,134 @@ mod tests {
         assert_eq!(profile.time.valid_from.as_deref(), Some("2026-04-01"));
         assert_eq!(profile.evidence[0].source_id, "faq");
         assert_eq!(profile.evidence[0].evidence_id, "ev-faq-0");
+    }
+
+    #[test]
+    fn planning_document_types_map_to_analysis_and_record_roles() {
+        let mut analysis = evidence("analysis", 0);
+        analysis.text = "---\ndocument_type: options_analysis\nstatus: reviewed\n---".to_owned();
+        let mut decision = evidence("decision", 0);
+        decision.text = "---\ndocument_type: decision_minutes\nstatus: approved\n---".to_owned();
+
+        let analysis_profile = fallback_document_profile("analysis", &[analysis]).unwrap();
+        let decision_profile = fallback_document_profile("decision", &[decision]).unwrap();
+
+        assert_eq!(analysis_profile.role, fragarach_ir::DocumentRole::Analysis);
+        assert_eq!(decision_profile.role, fragarach_ir::DocumentRole::Record);
+    }
+
+    #[test]
+    fn unique_document_ids_normalize_relation_endpoints_but_ambiguous_ids_do_not() {
+        let mut first_evidence = evidence("src-policy-v1", 0);
+        first_evidence.text =
+            "---\ndocument_id: POLICY-1\nrevision: 1\ndocument_type: policy\n---".to_owned();
+        let mut second_evidence = evidence("src-policy-v2", 0);
+        second_evidence.text =
+            "---\ndocument_id: POLICY-2\nrevision: 2\ndocument_type: policy\n---".to_owned();
+        let profiles = vec![
+            fallback_document_profile("src-policy-v1", &[first_evidence]).unwrap(),
+            fallback_document_profile("src-policy-v2", &[second_evidence]).unwrap(),
+        ];
+        let mut relation = DocumentRelation {
+            id: "rel-version".to_owned(),
+            position: DocumentPosition::Dominates,
+            kind: RelationKind::Supersedes,
+            source_id: "POLICY-2".to_owned(),
+            target_id: "POLICY-1".to_owned(),
+            source_clauses: Vec::new(),
+            target_clauses: Vec::new(),
+            scope: ApplicabilityScope::default(),
+            valid_from: None,
+            valid_to: None,
+            evidence: Vec::new(),
+        };
+
+        normalize_relation_endpoints(&mut relation, &profiles);
+
+        assert_eq!(relation.source_id, "src-policy-v2");
+        assert_eq!(relation.target_id, "src-policy-v1");
+
+        let mut ambiguous_profiles = profiles;
+        let mut duplicate = ambiguous_profiles[0].clone();
+        duplicate.source_id = "src-policy-v1-copy".to_owned();
+        ambiguous_profiles.push(duplicate);
+        relation.target_id = "POLICY-1".to_owned();
+        normalize_relation_endpoints(&mut relation, &ambiguous_profiles);
+        assert_eq!(relation.target_id, "POLICY-1");
+    }
+
+    #[test]
+    fn stale_guidance_position_becomes_conflict_only_with_incompatible_scalar_claims() {
+        let mut faq_evidence = evidence("faq", 0);
+        faq_evidence.text =
+            "---\ndocument_id: FAQ-1\ndocument_type: faq\nstatus: stale\n---".to_owned();
+        let mut policy_evidence = evidence("policy", 0);
+        policy_evidence.text =
+            "---\ndocument_id: POLICY-1\ndocument_type: policy\nstatus: current\n---".to_owned();
+        let profiles = vec![
+            fallback_document_profile("faq", &[faq_evidence]).unwrap(),
+            fallback_document_profile("policy", &[policy_evidence]).unwrap(),
+        ];
+        let mut relations = vec![DocumentRelation {
+            id: "rel-stale".to_owned(),
+            position: DocumentPosition::NonEffective,
+            kind: RelationKind::OperationalPosition,
+            source_id: "faq".to_owned(),
+            target_id: "policy".to_owned(),
+            source_clauses: Vec::new(),
+            target_clauses: Vec::new(),
+            scope: ApplicabilityScope::default(),
+            valid_from: None,
+            valid_to: None,
+            evidence: Vec::new(),
+        }];
+        let claim = |id: &str, subject: &str, object: serde_json::Value, source_id: &str| Claim {
+            id: id.to_owned(),
+            subject: subject.to_owned(),
+            predicate: "requires_approval".to_owned(),
+            object,
+            condition: None,
+            valid_from: None,
+            valid_to: None,
+            authority: None,
+            status: None,
+            confidence: 1.0,
+            evidence: vec![EvidenceReference {
+                source_id: source_id.to_owned(),
+                evidence_id: format!("ev-{source_id}"),
+            }],
+        };
+        let claims = vec![
+            claim(
+                "faq-claim",
+                "設計変更の承認",
+                serde_json::json!("製造部長"),
+                "faq",
+            ),
+            claim(
+                "policy-claim",
+                "設計変更",
+                serde_json::json!(["品質保証部長", "主任技師"]),
+                "policy",
+            ),
+        ];
+
+        refine_stale_guidance_relations(&mut relations, &profiles, &claims);
+
+        assert_eq!(relations[0].kind, RelationKind::ConflictsWith);
+
+        relations[0].kind = RelationKind::OperationalPosition;
+        let matching_claims = vec![
+            claims[0].clone(),
+            claim(
+                "same-policy-claim",
+                "設計変更",
+                serde_json::json!("製造部長"),
+                "policy",
+            ),
+        ];
+        refine_stale_guidance_relations(&mut relations, &profiles, &matching_claims);
+        assert_eq!(relations[0].kind, RelationKind::OperationalPosition);
     }
 
     #[test]
