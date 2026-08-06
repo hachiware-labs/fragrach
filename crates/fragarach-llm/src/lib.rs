@@ -42,7 +42,7 @@ const PREDICATE_CATALOG: &[&str] = &[
 
 const OLLAMA_CONTEXT_LENGTH: u64 = 32 * 1024;
 pub const CLAIM_EXTRACTION_CONTRACT_VERSION: &str = "claim-extraction-v1";
-pub const DOCUMENT_PROFILE_CONTRACT_VERSION: &str = "document-position-extraction-v4";
+pub const DOCUMENT_PROFILE_CONTRACT_VERSION: &str = "document-position-extraction-v5";
 
 pub fn claim_extraction_contract_fingerprint() -> String {
     let sentinel = ClaimExtractionRequest {
@@ -575,6 +575,8 @@ fn document_profile_extraction_prompt(
          An approved deviation or waiver is an instruction linked with exception_to, not a new general norm.\n\
          Records are primary evidence of an event or state. A report that compares, interprets, or analyzes\n\
          records is analysis rather than a primary record. A record never changes a rule.\n\
+         operating_procedure, work_instruction, implementation_plan, and temporary_deviation documents are\n\
+         instructions. decision_minutes and execution_log documents are records; options_analysis is analysis.\n\
          Proposals remain proposals even when they describe a concrete desired rule.\n\
          force.level is mandatory, recommended, or informational. authority_rank is an ordinal 0-10\n\
          within this input only; do not let specificity, recency, or relevance change authority.\n\
@@ -604,12 +606,18 @@ fn document_profile_extraction_prompt(
          or revision. Use non_effective position for the approval record unless the evidence supports another\n\
          position. Do not use records_execution_of for authorization; reserve it for evidence that an approved\n\
          action was actually performed or applied.\n\
+         applies_to means that a scoped instruction operationalizes an identified broader procedure or rule.\n\
+         exception_to means that an approved, limited deviation changes the target rule only for its stated\n\
+         scope or time. records_execution_of means that a primary record documents actual performance of the\n\
+         target instruction or deviation; match the action and scope, and do not require a printed document ID\n\
+         when the text explicitly identifies the target document type and the endpoint is otherwise unique.\n\
          Relations are not mutually exclusive. When stale guidance states a value incompatible with a formal\n\
          policy and the policy also has precedence, emit both conflicts_with and order_of_precedence for that\n\
          document pair, each with its own exact evidence.\n\
          Before returning, enumerate relation candidates independently for every source: explicit successors,\n\
-         approval or decision records with named targets, stale communications with rules or values that differ\n\
-         from an applicable normative source, and execution records with named actions. operational_position\n\
+         scoped instructions with governing procedures, approved deviations with target rules, approval or\n\
+         decision records with named targets, stale communications with rules or values that differ from an\n\
+         applicable normative source, and execution records with named actions or deviations. operational_position\n\
          never replaces an evidenced conflicts_with relation. Section-planning or drafting boilerplate such as\n\
          'this section describes precedence' is not itself an operative order_of_precedence statement.\n\
          For amends and order_of_precedence, preserve the affected clauses. Never infer a whole-document\n\
@@ -866,6 +874,9 @@ mod tests {
 
         assert!(prompt.contains("approves means"));
         assert!(prompt.contains("Do not use records_execution_of for authorization"));
+        assert!(prompt.contains("applies_to means"));
+        assert!(prompt.contains("exception_to means"));
+        assert!(prompt.contains("records_execution_of means"));
         assert!(prompt.contains("never replaces an evidenced conflicts_with relation"));
     }
 

@@ -1948,9 +1948,13 @@ fn role_from_document_type(document_type: &str) -> DocumentRole {
         "policy" | "standard" | "master_contract" | "specification" | "amendment" => {
             DocumentRole::Normative
         }
-        "procedure" | "site_work_instruction" | "implementation_plan" | "sow" => {
-            DocumentRole::Instruction
-        }
+        "procedure"
+        | "operating_procedure"
+        | "site_work_instruction"
+        | "work_instruction"
+        | "implementation_plan"
+        | "temporary_deviation"
+        | "sow" => DocumentRole::Instruction,
         "approval_record" | "decision_record" | "decision_minutes" | "test_record"
         | "execution_log" | "release_record" | "audit_record" | "final_report" => {
             DocumentRole::Record
@@ -2848,6 +2852,22 @@ mod tests {
 
         assert_eq!(analysis_profile.role, fragarach_ir::DocumentRole::Analysis);
         assert_eq!(decision_profile.role, fragarach_ir::DocumentRole::Record);
+    }
+
+    #[test]
+    fn operations_document_types_map_to_instruction_roles() {
+        for document_type in [
+            "operating_procedure",
+            "work_instruction",
+            "temporary_deviation",
+        ] {
+            let mut item = evidence(document_type, 0);
+            item.text = format!("---\ndocument_type: {document_type}\nstatus: current\n---");
+
+            let profile = fallback_document_profile(document_type, &[item]).unwrap();
+
+            assert_eq!(profile.role, fragarach_ir::DocumentRole::Instruction);
+        }
     }
 
     #[test]
