@@ -8,7 +8,8 @@ use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use fragarach_ir::{
     Claim, CompilationPolicy, Conflict, ConflictKind, ConflictStatus, Diagnostic,
-    DiagnosticSeverity, EvidenceReference, ParsedDocument, UsageIntent,
+    DiagnosticSeverity, DocumentProfile, DocumentRelation, DocumentRole, EvidenceReference,
+    ParsedDocument, RelationKind, UsageIntent,
 };
 use fragarach_llm::{ClaimCandidate, ClaimExtractionResponse, PromptEvidence};
 use sha2::{Digest, Sha256};
@@ -59,6 +60,25 @@ pub fn analyze_conflicts(
     context: &ConflictContext,
     policy: &CompilationPolicy,
 ) -> ConflictAnalysis {
+    analyze_conflicts_with_relations(claims, &[], context, policy)
+}
+
+pub fn analyze_conflicts_with_relations(
+    claims: &[Claim],
+    relations: &[DocumentRelation],
+    context: &ConflictContext,
+    policy: &CompilationPolicy,
+) -> ConflictAnalysis {
+    analyze_conflicts_with_metadata(claims, &[], relations, context, policy)
+}
+
+pub fn analyze_conflicts_with_metadata(
+    claims: &[Claim],
+    profiles: &[DocumentProfile],
+    relations: &[DocumentRelation],
+    context: &ConflictContext,
+    policy: &CompilationPolicy,
+) -> ConflictAnalysis {
     let mut conflicts = Vec::new();
     let mut diagnostics = Vec::new();
 
@@ -66,12 +86,15 @@ pub fn analyze_conflicts(
         for right_index in (left_index + 1)..claims.len() {
             let left = &claims[left_index];
             let right = &claims[right_index];
-            if !same_claim_slot(left, right) || left.object == right.object {
+            if !same_claim_slot(left, right)
+                || claim_objects_equivalent(left, right)
+                || same_source_conditional_alternatives(left, right)
+            {
                 continue;
             }
 
             let id = stable_conflict_id(&left.id, &right.id);
-            let resolution = deterministic_resolution(left, right, context);
+            let resolution = deterministic_resolution(left, right, profiles, relations, context);
             let (kind, status, resolution_text, diagnostic_id) =
                 if let Some((kind, text)) = resolution {
                     (kind, ConflictStatus::Resolved, Some(text), None)
@@ -464,6 +487,51 @@ fn same_claim_slot(left: &Claim, right: &Claim) -> bool {
                 == normalized_condition(right.condition.as_deref()))
 }
 
+fn claim_objects_equivalent(left: &Claim, right: &Claim) -> bool {
+    if left.object == right.object {
+        return true;
+    }
+    left.object
+        .as_str()
+        .zip(right.object.as_str())
+        .is_some_and(|(left, right)| {
+            normalized_scalar_value(left) == normalized_scalar_value(right)
+        })
+}
+
+fn normalized_scalar_value(value: &str) -> String {
+    value
+        .trim()
+        .to_lowercase()
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .map(|character| match character {
+            '〇' | '零' => '0',
+            '一' => '1',
+            '二' => '2',
+            '三' => '3',
+            '四' => '4',
+            '五' => '5',
+            '六' => '6',
+            '七' => '7',
+            '八' => '8',
+            '九' => '9',
+            other => other,
+        })
+        .collect()
+}
+
+fn same_source_conditional_alternatives(left: &Claim, right: &Claim) -> bool {
+    let left_sources = claim_sources(left);
+    let right_sources = claim_sources(right);
+    !left_sources.is_empty()
+        && left_sources == right_sources
+        && normalized_condition(left.condition.as_deref()).is_some()
+        && normalized_condition(right.condition.as_deref()).is_some()
+        && normalized_condition(left.condition.as_deref())
+            != normalized_condition(right.condition.as_deref())
+}
+
 fn subjects_equivalent(left: &str, right: &str) -> bool {
     let left = left.trim().to_lowercase();
     let right = right.trim().to_lowercase();
@@ -522,6 +590,8 @@ fn normalized_condition(condition: Option<&str>) -> Option<String> {
 fn deterministic_resolution(
     left: &Claim,
     right: &Claim,
+    profiles: &[DocumentProfile],
+    relations: &[DocumentRelation],
     context: &ConflictContext,
 ) -> Option<(ConflictKind, String)> {
     if validity_ranges_do_not_overlap(left, right) {
@@ -559,16 +629,165 @@ fn deterministic_resolution(
     let left_rank = authority_rank(left.authority.as_deref(), context);
     let right_rank = authority_rank(right.authority.as_deref(), context);
     match (left_rank, right_rank) {
-        (Some(left_rank), Some(right_rank)) if left_rank < right_rank => Some((
-            ConflictKind::Authority,
-            format!("宣言済み権威順により{}を優先します", left.id),
-        )),
-        (Some(left_rank), Some(right_rank)) if right_rank < left_rank => Some((
-            ConflictKind::Authority,
-            format!("宣言済み権威順により{}を優先します", right.id),
-        )),
-        _ => None,
+        (Some(left_rank), Some(right_rank)) if left_rank < right_rank => {
+            return Some((
+                ConflictKind::Authority,
+                format!("宣言済み権威順により{}を優先します", left.id),
+            ));
+        }
+        (Some(left_rank), Some(right_rank)) if right_rank < left_rank => {
+            return Some((
+                ConflictKind::Authority,
+                format!("宣言済み権威順により{}を優先します", right.id),
+            ));
+        }
+        _ => {}
     }
+
+    explicit_exception_resolution(left, right, profiles, relations, context)
+}
+
+fn explicit_exception_resolution(
+    left: &Claim,
+    right: &Claim,
+    profiles: &[DocumentProfile],
+    relations: &[DocumentRelation],
+    context: &ConflictContext,
+) -> Option<(ConflictKind, String)> {
+    let left_sources = claim_sources(left);
+    let right_sources = claim_sources(right);
+    let exception = relations.iter().find_map(|relation| {
+        if relation.kind != RelationKind::ExceptionTo
+            || !relation_active_at(relation, context.as_of)
+        {
+            return None;
+        }
+
+        let winner = if left_sources.contains(relation.source_id.as_str())
+            && right_sources.iter().any(|source| {
+                source_is_governed_by(
+                    source,
+                    &relation.target_id,
+                    relation,
+                    relations,
+                    context.as_of,
+                )
+            }) {
+            left
+        } else if right_sources.contains(relation.source_id.as_str())
+            && left_sources.iter().any(|source| {
+                source_is_governed_by(
+                    source,
+                    &relation.target_id,
+                    relation,
+                    relations,
+                    context.as_of,
+                )
+            })
+        {
+            right
+        } else {
+            return None;
+        };
+
+        Some((
+            ConflictKind::ExplicitOverride,
+            format!("{}により期限付き例外{}を優先します", relation.id, winner.id),
+        ))
+    });
+    if exception.is_some() {
+        return exception;
+    }
+
+    non_effective_record_resolution(left, right, profiles, relations, context.as_of)
+}
+
+fn claim_sources(claim: &Claim) -> HashSet<&str> {
+    claim
+        .evidence
+        .iter()
+        .map(|reference| reference.source_id.as_str())
+        .collect()
+}
+
+fn source_is_governed_by(
+    source: &str,
+    base_source: &str,
+    exception: &DocumentRelation,
+    relations: &[DocumentRelation],
+    as_of: Option<NaiveDate>,
+) -> bool {
+    source == base_source
+        || relations.iter().any(|relation| {
+            relation.kind == RelationKind::AppliesTo
+                && relation.source_id == source
+                && relation.target_id == base_source
+                && relation.scope == exception.scope
+                && relation_active_at(relation, as_of)
+        })
+}
+
+fn non_effective_record_resolution(
+    left: &Claim,
+    right: &Claim,
+    profiles: &[DocumentProfile],
+    relations: &[DocumentRelation],
+    as_of: Option<NaiveDate>,
+) -> Option<(ConflictKind, String)> {
+    let mut record_sources = profiles
+        .iter()
+        .filter(|profile| profile.role == DocumentRole::Record)
+        .map(|profile| profile.source_id.as_str())
+        .collect::<HashSet<_>>();
+    record_sources.extend(
+        relations
+            .iter()
+            .filter(|relation| {
+                relation.kind == RelationKind::RecordsExecutionOf
+                    && relation_active_at(relation, as_of)
+            })
+            .map(|relation| relation.source_id.as_str()),
+    );
+    let left_is_record = claim_sources(left)
+        .iter()
+        .any(|source| record_sources.contains(source));
+    let right_is_record = claim_sources(right)
+        .iter()
+        .any(|source| record_sources.contains(source));
+    let winner = match (left_is_record, right_is_record) {
+        (true, false) => right,
+        (false, true) => left,
+        _ => return None,
+    };
+    Some((
+        ConflictKind::ExplicitOverride,
+        format!(
+            "records_execution_ofにより実施記録を非規範として扱い{}を保持します",
+            winner.id
+        ),
+    ))
+}
+
+fn relation_active_at(relation: &DocumentRelation, as_of: Option<NaiveDate>) -> bool {
+    let has_time_bound = relation.valid_from.is_some() || relation.valid_to.is_some();
+    let Some(as_of) = as_of else {
+        return !has_time_bound;
+    };
+    let valid_from = match relation.valid_from.as_deref() {
+        Some(value) => match NaiveDate::parse_from_str(value, "%Y-%m-%d") {
+            Ok(value) => Some(value),
+            Err(_) => return false,
+        },
+        None => None,
+    };
+    let valid_to = match relation.valid_to.as_deref() {
+        Some(value) => match NaiveDate::parse_from_str(value, "%Y-%m-%d") {
+            Ok(value) => Some(value),
+            Err(_) => return false,
+        },
+        None => None,
+    };
+    valid_from.is_none_or(|from| from <= as_of) && valid_to.is_none_or(|to| as_of <= to)
 }
 
 fn validity_ranges_do_not_overlap(left: &Claim, right: &Claim) -> bool {
@@ -664,7 +883,8 @@ fn unresolved_conflict_diagnostic(
             .chain(&right.evidence)
             .map(|reference| reference.evidence_id.clone())
             .collect(),
-        reason: "適用時期、状態、または宣言済み権威順から一意に決定できません".to_owned(),
+        reason: "適用時期、状態、宣言済み権威順、または有効な明示関係から一意に決定できません"
+            .to_owned(),
         suggestions: vec![
             "適用日とauthorityを確認するか、Evidence付きoverrideを登録してください".to_owned(),
         ],
@@ -979,6 +1199,224 @@ mod tests {
                 evidence_id: format!("ev_{id}"),
             }],
         }
+    }
+
+    fn exception_relation(source: &str, target: &str) -> DocumentRelation {
+        DocumentRelation {
+            id: "rel_exception".to_owned(),
+            position: fragarach_ir::DocumentPosition::Conditional,
+            kind: RelationKind::ExceptionTo,
+            source_id: source.to_owned(),
+            target_id: target.to_owned(),
+            source_clauses: Vec::new(),
+            target_clauses: Vec::new(),
+            scope: fragarach_ir::ApplicabilityScope::default(),
+            valid_from: Some("2026-07-01".to_owned()),
+            valid_to: Some("2026-07-31".to_owned()),
+            evidence: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn active_exception_relation_resolves_claim_conflict() {
+        let standard = conflicting_claim("standard", "一営業日以内");
+        let exception = conflicting_claim("exception", "二時間以内");
+        let relation = exception_relation("src_exception", "src_standard");
+        let context = ConflictContext {
+            as_of: NaiveDate::from_ymd_opt(2026, 7, 15),
+            authority_precedence: Vec::new(),
+        };
+
+        let analysis = analyze_conflicts_with_relations(
+            &[standard, exception],
+            &[relation],
+            &context,
+            &CompilationPolicy::default(),
+        );
+
+        assert_eq!(analysis.conflicts.len(), 1);
+        assert_eq!(analysis.conflicts[0].kind, ConflictKind::ExplicitOverride);
+        assert_eq!(analysis.conflicts[0].status, ConflictStatus::Resolved);
+        assert!(analysis.diagnostics.is_empty());
+        assert!(
+            analysis.conflicts[0]
+                .resolution
+                .as_deref()
+                .is_some_and(|text| text.contains("exception"))
+        );
+    }
+
+    #[test]
+    fn bounded_exception_relation_requires_matching_date_and_endpoints() {
+        let standard = conflicting_claim("standard", "一営業日以内");
+        let exception = conflicting_claim("exception", "二時間以内");
+        let relation = exception_relation("src_exception", "src_standard");
+
+        let missing_date = analyze_conflicts_with_relations(
+            &[standard.clone(), exception.clone()],
+            std::slice::from_ref(&relation),
+            &ConflictContext::default(),
+            &CompilationPolicy::default(),
+        );
+        assert_eq!(missing_date.conflicts[0].status, ConflictStatus::Unresolved);
+
+        let expired = analyze_conflicts_with_relations(
+            &[standard.clone(), exception.clone()],
+            &[relation],
+            &ConflictContext {
+                as_of: NaiveDate::from_ymd_opt(2026, 8, 1),
+                authority_precedence: Vec::new(),
+            },
+            &CompilationPolicy::default(),
+        );
+        assert_eq!(expired.conflicts[0].status, ConflictStatus::Unresolved);
+
+        let wrong_endpoint = analyze_conflicts_with_relations(
+            &[standard, exception],
+            &[exception_relation("src_exception", "src_other")],
+            &ConflictContext {
+                as_of: NaiveDate::from_ymd_opt(2026, 7, 15),
+                authority_precedence: Vec::new(),
+            },
+            &CompilationPolicy::default(),
+        );
+        assert_eq!(
+            wrong_endpoint.conflicts[0].status,
+            ConflictStatus::Unresolved
+        );
+    }
+
+    #[test]
+    fn exception_applies_to_instruction_only_with_the_same_scope() {
+        let instruction = conflicting_claim("instruction", "一営業日以内");
+        let exception = conflicting_claim("exception", "二時間以内");
+        let mut exception_to = exception_relation("src_exception", "src_standard");
+        exception_to.scope.entities = vec!["白峰メディカル".to_owned()];
+        let mut applies_to = exception_relation("src_instruction", "src_standard");
+        applies_to.id = "rel_applies".to_owned();
+        applies_to.kind = RelationKind::AppliesTo;
+        applies_to.valid_from = Some("2026-04-01".to_owned());
+        applies_to.valid_to = None;
+        applies_to.scope = exception_to.scope.clone();
+        let context = ConflictContext {
+            as_of: NaiveDate::from_ymd_opt(2026, 7, 15),
+            authority_precedence: Vec::new(),
+        };
+
+        let resolved = analyze_conflicts_with_relations(
+            &[instruction.clone(), exception.clone()],
+            &[exception_to.clone(), applies_to.clone()],
+            &context,
+            &CompilationPolicy::default(),
+        );
+        assert_eq!(resolved.conflicts[0].status, ConflictStatus::Resolved);
+        assert_eq!(resolved.conflicts[0].kind, ConflictKind::ExplicitOverride);
+
+        applies_to.scope.entities = vec!["別組織".to_owned()];
+        let mismatched_scope = analyze_conflicts_with_relations(
+            &[instruction, exception],
+            &[exception_to, applies_to],
+            &context,
+            &CompilationPolicy::default(),
+        );
+        assert_eq!(
+            mismatched_scope.conflicts[0].status,
+            ConflictStatus::Unresolved
+        );
+    }
+
+    #[test]
+    fn execution_record_is_non_normative_only_when_declared_by_relation() {
+        let record = conflicting_claim("record", "二時間以内");
+        let standard = conflicting_claim("standard", "一営業日以内");
+        let mut records = exception_relation("src_record", "src_exception");
+        records.kind = RelationKind::RecordsExecutionOf;
+        records.valid_from = None;
+        records.valid_to = None;
+
+        let resolved = analyze_conflicts_with_relations(
+            &[record.clone(), standard.clone()],
+            &[records],
+            &ConflictContext::default(),
+            &CompilationPolicy::default(),
+        );
+        assert_eq!(resolved.conflicts[0].status, ConflictStatus::Resolved);
+        assert!(
+            resolved.conflicts[0]
+                .resolution
+                .as_deref()
+                .is_some_and(|text| text.contains("非規範"))
+        );
+
+        let undeclared = analyze_conflicts_with_relations(
+            &[record, standard],
+            &[],
+            &ConflictContext::default(),
+            &CompilationPolicy::default(),
+        );
+        assert_eq!(undeclared.conflicts[0].status, ConflictStatus::Unresolved);
+    }
+
+    #[test]
+    fn record_profile_prevents_a_record_claim_from_becoming_a_rule() {
+        let record = conflicting_claim("record", "二時間以内");
+        let standard = conflicting_claim("standard", "一営業日以内");
+        let profile = DocumentProfile {
+            source_id: "src_record".to_owned(),
+            document_id: None,
+            revision: None,
+            role: DocumentRole::Record,
+            force: fragarach_ir::ForceProfile {
+                level: fragarach_ir::ForceLevel::Informational,
+                authority_rank: 0,
+                approved: true,
+            },
+            scope: fragarach_ir::ApplicabilityScope::default(),
+            time: fragarach_ir::TemporalProfile::default(),
+            official_record: Some(true),
+            evidence: Vec::new(),
+        };
+
+        let analysis = analyze_conflicts_with_metadata(
+            &[record, standard],
+            &[profile],
+            &[],
+            &ConflictContext::default(),
+            &CompilationPolicy::default(),
+        );
+
+        assert_eq!(analysis.conflicts[0].status, ConflictStatus::Resolved);
+        assert!(analysis.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn same_source_deadline_branches_are_not_conflicts() {
+        let mut included = conflicting_claim("same", "二時間以内");
+        included.condition = Some("対象案件の場合".to_owned());
+        let mut excluded = conflicting_claim("same", "一営業日以内");
+        excluded.condition = Some("対象案件以外".to_owned());
+
+        let analysis = analyze_conflicts(
+            &[included, excluded],
+            &ConflictContext::default(),
+            &CompilationPolicy::default(),
+        );
+
+        assert!(analysis.conflicts.is_empty());
+    }
+
+    #[test]
+    fn japanese_and_arabic_single_digit_values_are_equivalent() {
+        let written = conflicting_claim("written", "一営業日以内");
+        let numeric = conflicting_claim("numeric", "1営業日以内");
+
+        let analysis = analyze_conflicts(
+            &[written, numeric],
+            &ConflictContext::default(),
+            &CompilationPolicy::default(),
+        );
+
+        assert!(analysis.conflicts.is_empty());
     }
 
     #[test]

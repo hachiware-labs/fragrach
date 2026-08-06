@@ -27,8 +27,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    ConflictContext, analyze_conflicts, load_usage_intent, prompt_evidence_from_documents,
-    validate_extraction,
+    ConflictContext, analyze_conflicts_with_metadata, load_usage_intent,
+    prompt_evidence_from_documents, validate_extraction,
 };
 
 #[derive(Debug, Clone)]
@@ -533,7 +533,13 @@ pub fn compile_workspace(
         &document_relations,
         &evidence,
     );
-    let conflict_analysis = analyze_conflicts(&claims, &conflict_context, &options.policy);
+    let conflict_analysis = analyze_conflicts_with_metadata(
+        &claims,
+        &document_profiles,
+        &document_relations,
+        &conflict_context,
+        &options.policy,
+    );
     diagnostics.extend(conflict_analysis.diagnostics);
 
     let build_id = format!(
@@ -814,12 +820,30 @@ pub fn recompile_build(options: &RecompileOptions) -> Result<CompileResult> {
     let corpus_settings = load_corpus_settings(&source_manifest)?;
     apply_corpus_hints(&corpus_settings, &mut evidence)?;
     refresh_claim_source_metadata(&mut claims, &evidence);
+    let relations_path = options.input.join("document-relations.jsonl");
+    let document_relations: Vec<DocumentRelation> = if relations_path.exists() {
+        read_jsonl(&relations_path)?
+    } else {
+        Vec::new()
+    };
+    let profiles_path = options.input.join("document-profiles.jsonl");
+    let document_profiles: Vec<DocumentProfile> = if profiles_path.exists() {
+        read_jsonl(&profiles_path)?
+    } else {
+        Vec::new()
+    };
 
     let mut context = options.conflict_context.clone();
     if context.authority_precedence.is_empty() {
         context.authority_precedence = corpus_settings.authority_precedence.clone();
     }
-    let conflict_analysis = analyze_conflicts(&claims, &context, &options.policy);
+    let conflict_analysis = analyze_conflicts_with_metadata(
+        &claims,
+        &document_profiles,
+        &document_relations,
+        &context,
+        &options.policy,
+    );
     let mut diagnostics: Vec<Diagnostic> =
         read_jsonl::<Diagnostic>(&options.input.join("diagnostics.jsonl"))?
             .into_iter()

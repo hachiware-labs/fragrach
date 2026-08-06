@@ -16,10 +16,10 @@
 | 製品設計・planning | 12 | 9 | 1 | 1 |
 | 製品設計・operations | 12 | 9 | 2 | 2 |
 | 品質薬事・governance | 12 | 9 | 1 | 1 |
-| 品質薬事・operations | 12 | 9 | 2 | 0 |
-| 合計 | 60 | 45 | 8 | 6 |
+| 品質薬事・operations | 12 | 9 | 4 | 3 |
+| 合計 | 60 | 45 | 10 | 9 |
 
-したがって、現時点で確認した範囲は60文書、2業界・2部門、3用途に限られる。製品設計のgovernanceとplanningは抽出契約v4、製品設計のoperationsと品質薬事の2用途はv5で測定しており、単一契約版の全体性能を示す集計ではない。品質薬事のoperationsは2回ともProfile、Relation、Claimをfailed-buildへ保存できたが、未解決Conflictを許可しないIntentの公開条件を満たさず、Knowledge Buildとしては公開されなかった。
+したがって、現時点で確認した範囲は60文書、2業界・2部門、3用途に限られる。製品設計のgovernanceとplanningは抽出契約v4、製品設計のoperationsと品質薬事の2用途はv5で測定しており、単一契約版の全体性能を示す集計ではない。品質薬事operationsの4応答はすべて初回compileでProfile、Relation、Claimを保存したが、未解決Conflictを許可しないIntentの公開条件を満たさなかった。Conflict解析の修正後、3応答はLLMを再実行しないrecompileで公開でき、1応答は必要なRelation型が欠けたため失敗したままである。表の公開Buildは、この現行コードによる再コンパイル結果を含む。
 
 ## governanceの結果
 
@@ -67,15 +67,34 @@ operationsのGold 9本は、`applies_to`、`exception_to`、`records_execution_o
 
 両実行とも`applies_to`は3/3、質問が要求する`exception_to`は2/3、`records_execution_of`は2/3だった。S1のLOGについては、Providerが16桁の`source_id`から末尾1文字を落としたためProfileがfallbackとなり、LOGから例外指示へのRelationも端点不正で棄却された。別の`exception_to`は、fresh 1ではS3の例外指示がS2の手順を指し、fresh 2ではS2の例外指示が手順ではなく現場指示を指した。
 
-公開失敗の原因はRelation精度とは別にある。同じS1内で、通常手順の「一営業日以内」と期限付き例外の「二時間以内」が異なるClaimとして抽出され、`exception_to` Relationも存在していた。しかし、現在のClaim Conflict解析は適用期間、状態、宣言済み権威順だけを使い、Document Relationを参照しない。このため正当な期限付き例外を未解決Conflictと判定し、`unresolved_conflicts_allowed: false`の公開条件により両Buildが失敗した。データ拡張によって、Relationを抽出するだけでなくConflict解決へ接続する必要が明確になった。
+最初の2応答では、Relation精度とは別の公開失敗も起きた。同じS1内で、通常手順の「一営業日以内」と期限付き例外の「二時間以内」が異なるClaimとして抽出され、`exception_to` Relationも存在していた。しかし、修正前のClaim Conflict解析は適用期間、状態、宣言済み権威順だけを使い、Document Relationを参照していなかった。このため正当な期限付き例外を未解決Conflictと判定し、`unresolved_conflicts_allowed: false`の公開条件により両Buildが失敗した。データ拡張によって、Relationを抽出するだけでなくConflict解決へ接続する必要が明確になった。
+
+## 例外関係をConflict解決へ接続した結果
+
+Conflict解析を修正し、基準日時点で有効な`exception_to`の両端がClaimのEvidence sourceと一致する場合だけ、例外側を明示的なoverrideとして解決するようにした。同じscopeで同じ手順へ`applies_to`する現場指示にもこの判断を伝播する。Profileが`record`である文書と、`records_execution_of`のsourceは非規範として扱い、実施結果を新しい規則にしない。期限付きRelationに基準日がない場合、期限外、端点不一致、scope不一致では従来どおり未解決に残す。
+
+加えて、同じsourceが異なる明示条件で示す期限は条件分岐として保持し、一桁の漢数字と算用数字だけが異なる値は同値とみなす。これにより、対象内の「二時間以内」と対象外の「一営業日以内」、および「一営業日以内」と「1営業日以内」を偽のConflictにしない。
+
+この修正で、先の品質薬事operations 2応答は、LLM呼び出し0のrecompileにより未解決Conflictがそれぞれ5→0、2→0となり、どちらも`completed_with_warnings`で公開できた。Relation精度そのものは7/9のままであり、Conflict解決の改善とRelation抽出精度は分けて評価する必要がある。
+
+修正中と修正後に、同じ12文書をさらに2回fresh実行した。
+
+| 追加operations実行 | Gold一致 | 出力Relation | precision | recall | 初回未解決Conflict | 現行コードでの公開 |
+|---|---:|---:|---:|---:|---:|---|
+| 品質薬事 fresh 3 | 8/9 | 8 | 100% | 88.9% | 2 | recompileで成功 |
+| 品質薬事 fresh 4 | 5/9 | 8 | 62.5% | 55.6% | 2 | 失敗 |
+
+fresh 3は`exception_to`と`applies_to`を各3/3、`records_execution_of`を2/3抽出した。初回compile後に条件分岐と数字表記の規則を追加したため、保存済み応答をrecompileし、未解決Conflict 2→0で公開できた。fresh 4は質問必須の`exception_to`を3/3、`records_execution_of`を2/3抽出したが、`applies_to`は0/3だった。代わりに現場指示から手順への`order_of_precedence`を3本出した。この関係を`applies_to`と同一視すると意味を広げすぎるため、現行Conflict解析では例外を現場指示へ伝播せず、2件を未解決に残して公開を拒否した。
+
+4回の品質薬事operations応答を通じて、質問必須の`exception_to`は2/3、2/3、3/3、3/3と改善したが、全Relationの厳密一致は7/9、7/9、8/9、5/9と揺れた。正しいRelationが得られた応答を安全に利用する経路は改善した一方、完全fresh実行の公開安定性はRelation分類の再現率に制約されている。
 
 ## 現時点の判断
 
-製品設計部のgovernance 12文書では、今回の修正により既知のRelation欠落を再現可能な形で解消した。一方、品質薬事部ではgovernanceが7/9、operationsが2回とも7/9となり、同じ関係型でも部門横断の再現率はまだ十分ではない。operationsのProfile roleは両部門で正しくなったが、Relation端点のコピー誤り、列挙漏れ、正当な例外を未解決Conflictとする問題が残る。
+製品設計部のgovernance 12文書では、今回の修正により既知のRelation欠落を再現可能な形で解消した。一方、品質薬事部ではgovernanceが7/9、operationsが5/9から8/9となり、同じ関係型でも部門横断の再現率はまだ十分ではない。operationsのProfile roleは両部門で正しくなり、正当な期限付き例外と実施記録を偽の未解決Conflictにする問題は限定条件付きで解消した。しかし、Relation端点のコピー誤り、列挙漏れ、`applies_to`と`order_of_precedence`の分類揺れは残る。
 
 確認済みデータは60文書まで増えたが、全2,880文書の一部にすぎず、Vanilla RAGを上回ったとは判断できない。今回測ったのもコンパイル段階だけであり、検索順位、必要根拠の回収、最終回答の正しさは別に評価する必要がある。
 
-次の修正単位では、第一に`exception_to`をClaim Conflict解決へ安全に接続し、正当な期限付き例外を未解決扱いしないようにする。第二に、Relation候補ごとの抽出または検証可能なcoverage passを設け、端点コピーと列挙漏れを独立に検証する。planningについては、Relation型を増やす前にGold Relationが原文から追跡できるよう、文書IDまたは明示的な参照をSourceへ加えるべきかを判断する。
+次の修正単位では、Relation候補ごとの抽出または検証可能なcoverage passを設け、端点コピー、列挙漏れ、`applies_to`と`order_of_precedence`の分類を独立に検証する。Conflict解決側で曖昧なRelation型を読み替えて公開を通す方法は採らない。planningについては、Relation型を増やす前にGold Relationが原文から追跡できるよう、文書IDまたは明示的な参照をSourceへ加えるべきかを判断する。
 
 ## 実行記録
 
@@ -88,3 +107,5 @@ operationsのGold 9本は、`applies_to`、`exception_to`、`records_execution_o
 - 品質薬事 governance v5 fresh: `target/benchmarks/enterprise-domain-actual/2026-08-06-relation-v5-healthcare-quality-regulatory-governance-luna-v1/`
 - 品質薬事 operations v5 fresh 1（failed-build保存）: `target/benchmarks/enterprise-domain-actual/2026-08-06-relation-v5-healthcare-quality-regulatory-operations-luna-v1/`
 - 品質薬事 operations v5 fresh 2（failed-build保存）: `target/benchmarks/enterprise-domain-actual/2026-08-06-relation-v5-healthcare-quality-regulatory-operations-luna-v2/`
+- 品質薬事 operations v6 fresh 3とrecompile成功: `target/benchmarks/enterprise-domain-actual/2026-08-06-relation-v6-healthcare-quality-regulatory-operations-luna-v3/`
+- 品質薬事 operations v6 fresh 4（Relation分類不足によりfailed-build保存）: `target/benchmarks/enterprise-domain-actual/2026-08-06-relation-v6-healthcare-quality-regulatory-operations-luna-v4/`

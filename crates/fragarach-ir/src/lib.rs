@@ -499,6 +499,7 @@ pub enum ConflictKind {
     Temporal,
     Authority,
     State,
+    ExplicitOverride,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
