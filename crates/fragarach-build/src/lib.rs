@@ -81,7 +81,6 @@ pub fn analyze_conflicts_with_metadata(
 ) -> ConflictAnalysis {
     let mut conflicts = Vec::new();
     let mut diagnostics = Vec::new();
-
     for left_index in 0..claims.len() {
         for right_index in (left_index + 1)..claims.len() {
             let left = &claims[left_index];
@@ -583,18 +582,20 @@ fn subjects_equivalent(left: &str, right: &str) -> bool {
 }
 
 fn predicate_requires_matching_condition(predicate: &str) -> bool {
-    matches!(
-        predicate.trim().to_ascii_lowercase().as_str(),
-        "requires_review"
-            | "allows_review_omission"
-            | "requires_approval"
-            | "allows_self_approval"
-            | "incident_commander"
-            | "access_duration"
-            | "access_approver"
-            | "notification_approver"
-            | "is_approved_as"
-    )
+    let predicate = predicate.trim().to_ascii_lowercase();
+    predicate.contains("deadline")
+        || matches!(
+            predicate.as_str(),
+            "requires_review"
+                | "allows_review_omission"
+                | "requires_approval"
+                | "allows_self_approval"
+                | "incident_commander"
+                | "access_duration"
+                | "access_approver"
+                | "notification_approver"
+                | "is_approved_as"
+        )
 }
 
 pub(crate) fn predicate_is_single_valued(predicate: &str) -> bool {
@@ -1656,6 +1657,23 @@ mod tests {
 
         let analysis = analyze_conflicts(
             &[included, excluded],
+            &ConflictContext::default(),
+            &CompilationPolicy::default(),
+        );
+
+        assert!(analysis.conflicts.is_empty());
+    }
+
+    #[test]
+    fn deadline_conditions_define_distinct_claim_slots_across_sources() {
+        let standard = conflicting_claim("standard", "一営業日以内");
+        let mut exception = conflicting_claim("exception", "二時間以内");
+        exception.condition = Some("承認済みの期間限定例外を適用する場合".to_owned());
+        let mut normal_site = conflicting_claim("site", "一営業日以内");
+        normal_site.condition = Some("通常運用の場合".to_owned());
+
+        let analysis = analyze_conflicts(
+            &[standard, exception, normal_site],
             &ConflictContext::default(),
             &CompilationPolicy::default(),
         );
