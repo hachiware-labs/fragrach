@@ -2125,7 +2125,8 @@ fn complete_relation_family_coverage(
                     })
                 || target.role != DocumentRole::Normative
                 || !target.force.approved
-                || !scopes_equivalent(&source.scope, &target.scope)
+                || (!scopes_equivalent(&source.scope, &target.scope)
+                    && !scope_is_strict_refinement(&source.scope, &target.scope))
                 || proposal_pairs.contains(&(source.source_id.clone(), target.source_id.clone()))
             {
                 continue;
@@ -2171,6 +2172,99 @@ fn complete_relation_family_coverage(
         .filter(|relation| relation.kind == fragarach_ir::RelationKind::AppliesTo)
         .map(|relation| (relation.source_id.clone(), relation.target_id.clone()))
         .collect::<HashSet<_>>();
+
+    for source in profiles.iter().filter(|profile| {
+        document_types
+            .get(profile.source_id.as_str())
+            .is_some_and(|document_type| document_type == "work_instruction")
+            && profile.role == DocumentRole::Instruction
+            && profile.force.approved
+    }) {
+        let candidates = profiles
+            .iter()
+            .filter(|target| {
+                document_types
+                    .get(target.source_id.as_str())
+                    .is_some_and(|document_type| document_type == "operating_procedure")
+                    && target.role == DocumentRole::Instruction
+                    && target.force.approved
+                    && scope_is_strict_refinement(&source.scope, &target.scope)
+            })
+            .filter_map(|target| {
+                corroborating_claim_evidence(&source.source_id, &target.source_id, claims)
+                    .map(|references| (target, references))
+            })
+            .collect::<Vec<_>>();
+        let [(target, references)] = candidates.as_slice() else {
+            continue;
+        };
+        if !covered_pairs.insert((source.source_id.clone(), target.source_id.clone())) {
+            continue;
+        }
+        let key = format!("{}:{}:applies_to", source.source_id, target.source_id);
+        additions.push(DocumentRelation {
+            id: format!("coverage_{}", &sha256_hex(key.as_bytes())[..16]),
+            position: fragarach_ir::DocumentPosition::Conditional,
+            kind: fragarach_ir::RelationKind::AppliesTo,
+            source_id: source.source_id.clone(),
+            target_id: target.source_id.clone(),
+            source_clauses: vec!["現場指示".to_owned()],
+            target_clauses: vec!["標準手順".to_owned()],
+            scope: source.scope.clone(),
+            valid_from: source.time.valid_from.clone(),
+            valid_to: source.time.valid_to.clone(),
+            evidence: references.clone(),
+        });
+    }
+
+    let mut exception_pairs = relations
+        .iter()
+        .filter(|relation| relation.kind == fragarach_ir::RelationKind::ExceptionTo)
+        .map(|relation| (relation.source_id.clone(), relation.target_id.clone()))
+        .collect::<HashSet<_>>();
+    for source in profiles.iter().filter(|profile| {
+        document_types
+            .get(profile.source_id.as_str())
+            .is_some_and(|document_type| document_type == "temporary_deviation")
+            && profile.role == DocumentRole::Instruction
+            && profile.force.approved
+    }) {
+        let candidates = profiles
+            .iter()
+            .filter(|target| {
+                document_types
+                    .get(target.source_id.as_str())
+                    .is_some_and(|document_type| document_type == "operating_procedure")
+                    && target.role == DocumentRole::Instruction
+                    && target.force.approved
+                    && scope_is_strict_refinement(&source.scope, &target.scope)
+            })
+            .filter_map(|target| {
+                incompatible_claim_evidence_scored(&source.source_id, &target.source_id, claims)
+                    .map(|(_, references)| (target, references))
+            })
+            .collect::<Vec<_>>();
+        let [(target, references)] = candidates.as_slice() else {
+            continue;
+        };
+        if !exception_pairs.insert((source.source_id.clone(), target.source_id.clone())) {
+            continue;
+        }
+        let key = format!("{}:{}:exception_to", source.source_id, target.source_id);
+        additions.push(DocumentRelation {
+            id: format!("coverage_{}", &sha256_hex(key.as_bytes())[..16]),
+            position: fragarach_ir::DocumentPosition::Conditional,
+            kind: fragarach_ir::RelationKind::ExceptionTo,
+            source_id: source.source_id.clone(),
+            target_id: target.source_id.clone(),
+            source_clauses: vec!["例外規則".to_owned()],
+            target_clauses: vec!["標準手順".to_owned()],
+            scope: source.scope.clone(),
+            valid_from: source.time.valid_from.clone(),
+            valid_to: source.time.valid_to.clone(),
+            evidence: references.clone(),
+        });
+    }
 
     for precedence in relations.iter() {
         if precedence.kind != fragarach_ir::RelationKind::OrderOfPrecedence
@@ -2229,6 +2323,52 @@ fn complete_relation_family_coverage(
         .filter(|relation| relation.kind == fragarach_ir::RelationKind::RecordsExecutionOf)
         .map(|relation| (relation.source_id.clone(), relation.target_id.clone()))
         .collect::<HashSet<_>>();
+    for source in profiles.iter().filter(|profile| {
+        document_types
+            .get(profile.source_id.as_str())
+            .is_some_and(|document_type| document_type == "execution_log")
+            && profile.role == DocumentRole::Record
+            && profile.official_record == Some(true)
+    }) {
+        let candidates = profiles
+            .iter()
+            .filter(|target| {
+                document_types
+                    .get(target.source_id.as_str())
+                    .is_some_and(|document_type| document_type == "temporary_deviation")
+                    && target.role == DocumentRole::Instruction
+                    && target.force.approved
+                    && scopes_equivalent(&source.scope, &target.scope)
+            })
+            .filter_map(|target| {
+                corroborating_claim_evidence(&source.source_id, &target.source_id, claims)
+                    .map(|references| (target, references))
+            })
+            .collect::<Vec<_>>();
+        let [(target, references)] = candidates.as_slice() else {
+            continue;
+        };
+        if !execution_pairs.insert((source.source_id.clone(), target.source_id.clone())) {
+            continue;
+        }
+        let key = format!(
+            "{}:{}:records_execution_of",
+            source.source_id, target.source_id
+        );
+        additions.push(DocumentRelation {
+            id: format!("coverage_{}", &sha256_hex(key.as_bytes())[..16]),
+            position: fragarach_ir::DocumentPosition::NonEffective,
+            kind: fragarach_ir::RelationKind::RecordsExecutionOf,
+            source_id: source.source_id.clone(),
+            target_id: target.source_id.clone(),
+            source_clauses: vec!["実施結果".to_owned()],
+            target_clauses: vec!["例外規則".to_owned()],
+            scope: source.scope.clone(),
+            valid_from: source.time.valid_from.clone(),
+            valid_to: source.time.valid_to.clone(),
+            evidence: references.clone(),
+        });
+    }
     for position in relations.iter() {
         if position.kind != fragarach_ir::RelationKind::OperationalPosition
             || position.position != fragarach_ir::DocumentPosition::NonEffective
@@ -4183,6 +4323,113 @@ mod tests {
     }
 
     #[test]
+    fn grounded_operations_chain_completes_three_relation_families() {
+        let metadata = |source_id: &str, document_type: &str, official_record: bool| {
+            let mut item = evidence(source_id, 0);
+            item.text = format!(
+                "---\ndocument_type: {document_type}\napproved: true\nofficial_record: {official_record}\n---"
+            );
+            item
+        };
+        let standard_metadata = metadata("standard", "operating_procedure", false);
+        let local_metadata = metadata("local", "work_instruction", false);
+        let deviation_metadata = metadata("deviation", "temporary_deviation", false);
+        let log_metadata = metadata("log", "execution_log", true);
+        let mut standard =
+            fallback_document_profile("standard", std::slice::from_ref(&standard_metadata))
+                .unwrap();
+        let mut local =
+            fallback_document_profile("local", std::slice::from_ref(&local_metadata)).unwrap();
+        let mut deviation =
+            fallback_document_profile("deviation", std::slice::from_ref(&deviation_metadata))
+                .unwrap();
+        let mut log =
+            fallback_document_profile("log", std::slice::from_ref(&log_metadata)).unwrap();
+        let broad_scope = ApplicabilityScope {
+            entities: vec!["日和リテール".to_owned()],
+            ..ApplicabilityScope::default()
+        };
+        let local_scope = ApplicabilityScope {
+            entities: vec!["日和リテール".to_owned()],
+            sites: vec!["札幌サポートセンター".to_owned()],
+            ..ApplicabilityScope::default()
+        };
+        standard.role = DocumentRole::Instruction;
+        standard.force.approved = true;
+        standard.scope = broad_scope;
+        local.role = DocumentRole::Instruction;
+        local.force.approved = true;
+        local.scope = local_scope.clone();
+        deviation.role = DocumentRole::Instruction;
+        deviation.force.approved = true;
+        deviation.scope = local_scope.clone();
+        log.role = DocumentRole::Record;
+        log.force.approved = true;
+        log.official_record = Some(true);
+        log.scope = local_scope;
+        let claims = vec![
+            grounded_claim(
+                "standard",
+                &standard_metadata.evidence_id,
+                "重要案件レビュー",
+                "review_deadline",
+                serde_json::json!("一営業日以内"),
+            ),
+            grounded_claim(
+                "local",
+                &local_metadata.evidence_id,
+                "重要案件レビュー",
+                "review_deadline",
+                serde_json::json!("一営業日以内"),
+            ),
+            grounded_claim(
+                "deviation",
+                &deviation_metadata.evidence_id,
+                "重要案件レビュー",
+                "review_deadline",
+                serde_json::json!("二時間以内"),
+            ),
+            grounded_claim(
+                "log",
+                &log_metadata.evidence_id,
+                "重要案件レビュー",
+                "review_deadline",
+                serde_json::json!("二時間以内"),
+            ),
+        ];
+        let mut relations = Vec::new();
+
+        complete_relation_family_coverage(
+            &mut relations,
+            &[standard, local, deviation, log],
+            &claims,
+            &[
+                standard_metadata,
+                local_metadata,
+                deviation_metadata,
+                log_metadata,
+            ],
+        );
+
+        assert_eq!(relations.len(), 3);
+        assert!(relations.iter().any(|relation| {
+            relation.kind == RelationKind::AppliesTo
+                && relation.source_id == "local"
+                && relation.target_id == "standard"
+        }));
+        assert!(relations.iter().any(|relation| {
+            relation.kind == RelationKind::ExceptionTo
+                && relation.source_id == "deviation"
+                && relation.target_id == "standard"
+        }));
+        assert!(relations.iter().any(|relation| {
+            relation.kind == RelationKind::RecordsExecutionOf
+                && relation.source_id == "log"
+                && relation.target_id == "deviation"
+        }));
+    }
+
+    #[test]
     fn operations_document_types_map_to_instruction_roles() {
         for document_type in [
             "operating_procedure",
@@ -4500,6 +4747,7 @@ mod tests {
         master.role = DocumentRole::Normative;
         master.force.approved = true;
         master.scope = proposal.scope.clone();
+        proposal.scope.products = vec!["取引監視AML-3".to_owned()];
         let mut relations = Vec::new();
 
         complete_relation_family_coverage(
