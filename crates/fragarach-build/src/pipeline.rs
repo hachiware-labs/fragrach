@@ -3114,7 +3114,142 @@ fn build_decision_packets(
             existing_material.evidence_ids.dedup();
         }
     }
+    loop {
+        let pair = (0..merged.len()).find_map(|context_index| {
+            (0..merged.len())
+                .filter(|candidate_index| *candidate_index != context_index)
+                .find(|candidate_index| {
+                    packets_form_complementary_decision(
+                        &merged[context_index],
+                        &merged[*candidate_index],
+                        relations,
+                    )
+                })
+                .map(|candidate_index| (context_index, candidate_index))
+        });
+        let Some((context_index, candidate_index)) = pair else {
+            break;
+        };
+        let candidate = merged.remove(candidate_index);
+        let context_index = if candidate_index < context_index {
+            context_index - 1
+        } else {
+            context_index
+        };
+        merge_decision_packet(&mut merged[context_index], candidate);
+    }
     merged
+}
+
+fn packets_form_complementary_decision(
+    context: &DecisionPacket,
+    candidate: &DecisionPacket,
+    relations: &[DocumentRelation],
+) -> bool {
+    if context
+        .materials
+        .iter()
+        .any(|material| material.role == PacketMaterialRole::Excluded)
+        || !candidate
+            .materials
+            .iter()
+            .any(|material| material.role == PacketMaterialRole::Excluded)
+    {
+        return false;
+    }
+    let shares_governing_material = context.materials.iter().any(|left| {
+        left.role == PacketMaterialRole::Governing
+            && candidate.materials.iter().any(|right| {
+                right.role == PacketMaterialRole::Governing && right.source_id == left.source_id
+            })
+    });
+    let material_roles_are_compatible = context.materials.iter().all(|left| {
+        candidate
+            .materials
+            .iter()
+            .find(|right| right.source_id == left.source_id)
+            .is_none_or(|right| right.role == left.role)
+    });
+    if !shares_governing_material || !material_roles_are_compatible {
+        return false;
+    }
+    let relation_by_id = relations
+        .iter()
+        .map(|relation| (relation.id.as_str(), relation))
+        .collect::<std::collections::HashMap<_, _>>();
+    let PacketPurpose::Decision {
+        relation_ids: context_relation_ids,
+    } = &context.purpose;
+    let PacketPurpose::Decision {
+        relation_ids: candidate_relation_ids,
+    } = &candidate.purpose;
+    let context_is_precedence = context_relation_ids.iter().any(|relation_id| {
+        relation_by_id
+            .get(relation_id.as_str())
+            .is_some_and(|relation| relation_expresses_precedence(relation))
+    });
+    let candidate_is_proposal = candidate_relation_ids.iter().any(|relation_id| {
+        relation_by_id
+            .get(relation_id.as_str())
+            .is_some_and(|relation| {
+                relation.kind == fragarach_ir::RelationKind::ProposesChangeTo
+                    && relation.position == fragarach_ir::DocumentPosition::NonEffective
+            })
+    });
+    if !context_is_precedence || !candidate_is_proposal {
+        return false;
+    }
+    context_relation_ids.iter().any(|left_id| {
+        candidate_relation_ids.iter().any(|right_id| {
+            let (Some(left), Some(right)) = (
+                relation_by_id.get(left_id.as_str()),
+                relation_by_id.get(right_id.as_str()),
+            ) else {
+                return false;
+            };
+            scopes_equivalent(&left.scope, &right.scope)
+                || scope_is_strict_refinement(&left.scope, &right.scope)
+                || scope_is_strict_refinement(&right.scope, &left.scope)
+        })
+    })
+}
+
+fn relation_expresses_precedence(relation: &DocumentRelation) -> bool {
+    if relation.kind == fragarach_ir::RelationKind::OrderOfPrecedence {
+        return true;
+    }
+    if relation.position != fragarach_ir::DocumentPosition::Conditional {
+        return false;
+    }
+    relation
+        .source_clauses
+        .iter()
+        .chain(&relation.target_clauses)
+        .map(|clause| clause.to_lowercase())
+        .any(|clause| {
+            clause.contains("優先") || clause.contains("precedence") || clause.contains("priority")
+        })
+}
+
+fn merge_decision_packet(existing: &mut DecisionPacket, incoming: DecisionPacket) {
+    let PacketPurpose::Decision { relation_ids } = &mut existing.purpose;
+    let PacketPurpose::Decision {
+        relation_ids: incoming_relation_ids,
+    } = incoming.purpose;
+    relation_ids.extend(incoming_relation_ids);
+    relation_ids.sort();
+    relation_ids.dedup();
+    for material in incoming.materials {
+        if let Some(existing_material) = existing.materials.iter_mut().find(|candidate| {
+            candidate.source_id == material.source_id && candidate.role == material.role
+        }) {
+            existing_material.evidence_ids.extend(material.evidence_ids);
+            existing_material.evidence_ids.sort();
+            existing_material.evidence_ids.dedup();
+        } else {
+            existing.materials.push(material);
+        }
+    }
 }
 
 fn render_decision_packet(
@@ -3368,7 +3503,27 @@ fn relation_evidence_score(relation: &DocumentRelation, item: &PromptEvidence) -
         "exception_to" => &["例外", "逸脱", "免除", "限定"],
         _ => &["適用", "由来", "参照", "関係"],
     };
-    let mut score = terms.iter().filter(|term| text.contains(**term)).count() * 20
+    let endpoint_clauses = if item.source_id == relation.source_id {
+        relation.source_clauses.as_slice()
+    } else if item.source_id == relation.target_id {
+        relation.target_clauses.as_slice()
+    } else {
+        &[]
+    };
+    let clause_score = if relation_expresses_precedence(relation) {
+        endpoint_clauses
+            .iter()
+            .filter(|clause| {
+                let clause = clause.trim().to_lowercase();
+                !clause.is_empty() && text.contains(&clause)
+            })
+            .count()
+            * 100
+    } else {
+        0
+    };
+    let mut score = clause_score
+        + terms.iter().filter(|term| text.contains(**term)).count() * 20
         + usize::from(item.valid_from.is_some() || item.valid_to.is_some()) * 3;
     if item
         .heading_path
@@ -3954,6 +4109,51 @@ mod tests {
     }
 
     #[test]
+    fn relation_evidence_prefers_explicit_endpoint_clauses_over_kind_vocabulary() {
+        let mut items = vec![
+            evidence("sow", 0),
+            evidence("master", 0),
+            evidence("master", 1),
+            evidence("master", 2),
+            evidence("master", 3),
+        ];
+        items[0].heading_path = vec!["優先".to_owned()];
+        items[0].text = "本個別条件は基本契約より優先する。".to_owned();
+        items[1].heading_path = vec!["契約対象".to_owned()];
+        items[1].text = "本契約は共通条件を定める。".to_owned();
+        items[2].heading_path = vec!["標準条件".to_owned()];
+        items[2].text = "重要依頼の一次応答は四時間以内。".to_owned();
+        items[3].heading_path = vec!["背景".to_owned()];
+        items[3].text = "契約資料群の背景説明。".to_owned();
+        items[4].heading_path = vec!["優先順位".to_owned()];
+        items[4].text = "個別契約で変更した条件は基本契約より優先する。".to_owned();
+        let relation = DocumentRelation {
+            id: "precedence-misclassified".to_owned(),
+            position: DocumentPosition::Conditional,
+            kind: RelationKind::AppliesTo,
+            source_id: "sow".to_owned(),
+            target_id: "master".to_owned(),
+            source_clauses: vec!["優先".to_owned()],
+            target_clauses: vec!["優先順位".to_owned()],
+            scope: ApplicabilityScope::default(),
+            valid_from: None,
+            valid_to: None,
+            evidence: vec![EvidenceReference {
+                source_id: "sow".to_owned(),
+                evidence_id: "ev-sow-0".to_owned(),
+            }],
+        };
+
+        let selected = select_relation_evidence(&relation, &items);
+
+        assert!(
+            selected.iter().any(|item| {
+                item.source_id == "master" && item.heading_path == ["優先順位"]
+            })
+        );
+    }
+
+    #[test]
     fn decision_packet_collapses_derived_roles_and_evidence_into_materials() {
         let items = vec![
             evidence("current", 0),
@@ -4043,6 +4243,171 @@ mod tests {
                 .len(),
             4
         );
+    }
+
+    #[test]
+    fn excluded_proposal_joins_the_compatible_governing_contract_decision() {
+        let mut items = vec![
+            evidence("proposal", 0),
+            evidence("master", 0),
+            evidence("sow", 0),
+        ];
+        items[0].text = "未署名の提案を契約上の義務として扱ってはならない。".to_owned();
+        items[1].text = "個別契約で変更した条件は基本契約より優先する。".to_owned();
+        items[2].text = "一次応答は一時間以内。".to_owned();
+        let broad_scope = ApplicabilityScope {
+            contracts: vec!["保守契約".to_owned()],
+            ..ApplicabilityScope::default()
+        };
+        let narrow_scope = ApplicabilityScope {
+            products: vec!["設備A".to_owned()],
+            ..broad_scope.clone()
+        };
+        let relations = vec![
+            DocumentRelation {
+                id: "proposal-to-master".to_owned(),
+                position: DocumentPosition::NonEffective,
+                kind: RelationKind::ProposesChangeTo,
+                source_id: "proposal".to_owned(),
+                target_id: "master".to_owned(),
+                source_clauses: vec!["契約状態".to_owned()],
+                target_clauses: Vec::new(),
+                scope: broad_scope,
+                valid_from: None,
+                valid_to: None,
+                evidence: Vec::new(),
+            },
+            DocumentRelation {
+                id: "sow-over-master".to_owned(),
+                position: DocumentPosition::Conditional,
+                kind: RelationKind::OrderOfPrecedence,
+                source_id: "sow".to_owned(),
+                target_id: "master".to_owned(),
+                source_clauses: vec!["個別条件".to_owned()],
+                target_clauses: vec!["優先順位".to_owned()],
+                scope: narrow_scope,
+                valid_from: None,
+                valid_to: None,
+                evidence: Vec::new(),
+            },
+        ];
+
+        let packets = build_decision_packets("commercial_compliance", &relations, &items);
+
+        assert_eq!(packets.len(), 1);
+        let PacketPurpose::Decision { relation_ids } = &packets[0].purpose;
+        assert_eq!(relation_ids, &["proposal-to-master", "sow-over-master"]);
+        assert!(packets[0].materials.iter().any(|material| {
+            material.source_id == "proposal" && material.role == PacketMaterialRole::Excluded
+        }));
+        assert!(packets[0].materials.iter().any(|material| {
+            material.source_id == "sow" && material.role == PacketMaterialRole::Governing
+        }));
+        assert!(packets[0].materials.iter().any(|material| {
+            material.source_id == "master" && material.role == PacketMaterialRole::Governing
+        }));
+        assert_eq!(
+            serde_json::to_value(&packets[0])
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .len(),
+            4
+        );
+    }
+
+    #[test]
+    fn excluded_proposal_does_not_join_a_different_contract_scope() {
+        let items = vec![
+            evidence("proposal", 0),
+            evidence("master", 0),
+            evidence("sow", 0),
+        ];
+        let relation = |id: &str,
+                        position: DocumentPosition,
+                        kind: RelationKind,
+                        source: &str,
+                        contract: &str| DocumentRelation {
+            id: id.to_owned(),
+            position,
+            kind,
+            source_id: source.to_owned(),
+            target_id: "master".to_owned(),
+            source_clauses: Vec::new(),
+            target_clauses: Vec::new(),
+            scope: ApplicabilityScope {
+                contracts: vec![contract.to_owned()],
+                ..ApplicabilityScope::default()
+            },
+            valid_from: None,
+            valid_to: None,
+            evidence: Vec::new(),
+        };
+        let relations = vec![
+            relation(
+                "proposal-to-master",
+                DocumentPosition::NonEffective,
+                RelationKind::ProposesChangeTo,
+                "proposal",
+                "契約A",
+            ),
+            relation(
+                "sow-over-master",
+                DocumentPosition::Conditional,
+                RelationKind::OrderOfPrecedence,
+                "sow",
+                "契約B",
+            ),
+        ];
+
+        let packets = build_decision_packets("commercial_compliance", &relations, &items);
+
+        assert_eq!(packets.len(), 2);
+    }
+
+    #[test]
+    fn excluded_proposal_does_not_join_a_non_precedence_decision() {
+        let items = vec![
+            evidence("proposal", 0),
+            evidence("baseline", 0),
+            evidence("amendment", 0),
+        ];
+        let relation = |id: &str, position: DocumentPosition, kind: RelationKind, source: &str| {
+            DocumentRelation {
+                id: id.to_owned(),
+                position,
+                kind,
+                source_id: source.to_owned(),
+                target_id: "baseline".to_owned(),
+                source_clauses: Vec::new(),
+                target_clauses: Vec::new(),
+                scope: ApplicabilityScope {
+                    products: vec!["製品A".to_owned()],
+                    ..ApplicabilityScope::default()
+                },
+                valid_from: None,
+                valid_to: None,
+                evidence: Vec::new(),
+            }
+        };
+        let relations = vec![
+            relation(
+                "proposal-to-baseline",
+                DocumentPosition::NonEffective,
+                RelationKind::ProposesChangeTo,
+                "proposal",
+            ),
+            relation(
+                "amendment-to-baseline",
+                DocumentPosition::Dominates,
+                RelationKind::Amends,
+                "amendment",
+            ),
+        ];
+
+        let packets = build_decision_packets("technical_spec", &relations, &items);
+
+        assert_eq!(packets.len(), 2);
     }
 
     #[test]
