@@ -9,8 +9,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 use fragarach_build::{
-    CompileOptions, ConflictContext, RecompileOptions, compile_workspace, export_rag_delta_jsonl,
-    export_rag_jsonl, read_build_report, read_extraction_cache_report, recompile_build,
+    CompileOptions, CompileStrategy, ConflictContext, RecompileOptions, compile_workspace,
+    export_rag_delta_jsonl, export_rag_jsonl, read_build_report, read_extraction_cache_report,
+    recompile_build,
 };
 use fragarach_ir::{
     ApplicabilityScope, CompilationPolicy, Diagnostic, DiagnosticSeverity, DocumentProfile,
@@ -164,6 +165,12 @@ struct ParallelProbeExtractor {
     max_active: Arc<AtomicUsize>,
 }
 
+struct ProfileParallelProbeExtractor {
+    profile_calls: Arc<AtomicUsize>,
+    active: Arc<AtomicUsize>,
+    max_active: Arc<AtomicUsize>,
+}
+
 impl ClaimExtractor for ParallelProbeExtractor {
     fn extract(&self, request: &ClaimExtractionRequest) -> Result<ClaimExtractionResponse> {
         let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
@@ -182,6 +189,29 @@ impl DocumentProfileExtractor for ParallelProbeExtractor {
         &self,
         request: &DocumentProfileExtractionRequest,
     ) -> Result<DocumentProfileExtractionResponse> {
+        Ok(fixture_profile_response(request))
+    }
+}
+
+impl ClaimExtractor for ProfileParallelProbeExtractor {
+    fn extract(&self, request: &ClaimExtractionRequest) -> Result<ClaimExtractionResponse> {
+        FixtureExtractor {
+            hallucinate_reference: false,
+        }
+        .extract(request)
+    }
+}
+
+impl DocumentProfileExtractor for ProfileParallelProbeExtractor {
+    fn extract_profiles(
+        &self,
+        request: &DocumentProfileExtractionRequest,
+    ) -> Result<DocumentProfileExtractionResponse> {
+        self.profile_calls.fetch_add(1, Ordering::SeqCst);
+        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_active.fetch_max(active, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(40));
+        self.active.fetch_sub(1, Ordering::SeqCst);
         Ok(fixture_profile_response(request))
     }
 }
@@ -252,6 +282,7 @@ fn atomically_publishes_complete_build_and_exports_it() {
             output: output.clone(),
             batch_size: 8,
             llm_concurrency: 1,
+            strategy: CompileStrategy::GlobalV1,
             use_extraction_cache: false,
             conflict_context: ConflictContext::default(),
             policy: CompilationPolicy::default(),
@@ -337,6 +368,7 @@ fn atomically_publishes_complete_build_and_exports_it() {
             output,
             batch_size: 8,
             llm_concurrency: 1,
+            strategy: CompileStrategy::GlobalV1,
             use_extraction_cache: false,
             conflict_context: ConflictContext::default(),
             policy: CompilationPolicy::default(),
@@ -360,6 +392,7 @@ fn recompile_rejects_claims_that_fail_current_ir_validation() {
             output: original.clone(),
             batch_size: 8,
             llm_concurrency: 1,
+            strategy: CompileStrategy::GlobalV1,
             use_extraction_cache: false,
             conflict_context: ConflictContext::default(),
             policy: CompilationPolicy::default(),
@@ -414,6 +447,7 @@ fn failed_build_is_preserved_outside_the_publication_path() {
             output: requested_output.clone(),
             batch_size: 8,
             llm_concurrency: 1,
+            strategy: CompileStrategy::GlobalV1,
             use_extraction_cache: false,
             conflict_context: ConflictContext::default(),
             policy: CompilationPolicy {
@@ -454,6 +488,7 @@ fn extraction_cache_reuses_identical_requests_and_invalidates_changed_intent() {
                 output: root.path().join(output),
                 batch_size: 8,
                 llm_concurrency: 1,
+                strategy: CompileStrategy::GlobalV1,
                 use_extraction_cache: true,
                 conflict_context: ConflictContext::default(),
                 policy: CompilationPolicy::default(),
@@ -510,6 +545,7 @@ fn fresh_build_reflects_added_edited_and_deleted_sources_with_source_local_cache
                 output: root.path().join(name),
                 batch_size: 8,
                 llm_concurrency: 1,
+                strategy: CompileStrategy::GlobalV1,
                 use_extraction_cache: true,
                 conflict_context: ConflictContext::default(),
                 policy: CompilationPolicy::default(),
@@ -670,6 +706,7 @@ fn extraction_cache_resumes_after_an_interrupted_compile() {
             output: root.path().join("interrupted"),
             batch_size: 8,
             llm_concurrency: 1,
+            strategy: CompileStrategy::GlobalV1,
             use_extraction_cache: true,
             conflict_context: ConflictContext::default(),
             policy: CompilationPolicy::default(),
@@ -697,6 +734,7 @@ fn extraction_cache_resumes_after_an_interrupted_compile() {
             output: root.path().join("resumed"),
             batch_size: 8,
             llm_concurrency: 1,
+            strategy: CompileStrategy::GlobalV1,
             use_extraction_cache: true,
             conflict_context: ConflictContext::default(),
             policy: CompilationPolicy::default(),
@@ -736,6 +774,7 @@ fn claim_batches_use_bounded_parallelism() {
             output: root.path().join("parallel"),
             batch_size: 2,
             llm_concurrency: 3,
+            strategy: CompileStrategy::GlobalV1,
             use_extraction_cache: false,
             conflict_context: ConflictContext::default(),
             policy: CompilationPolicy::default(),
@@ -750,4 +789,93 @@ fn claim_batches_use_bounded_parallelism() {
     assert_eq!(result.manifest.metrics.llm_concurrency, 3);
     assert!(result.manifest.metrics.llm_calls >= 3);
     assert_eq!(max_active.load(Ordering::SeqCst), 3);
+}
+
+#[test]
+fn linear_strategy_parallelizes_profiles_and_records_relation_work() {
+    let (root, intent) = fixture();
+    let source = root.path().join("source");
+    for index in 1..4 {
+        fs::write(
+            source.join(format!("policy-{index}.md")),
+            format!("# 規則{index}\n\n事後レビューは2営業日以内に行う。\n"),
+        )
+        .unwrap();
+    }
+    fragarach_core::scan(&source, root.path()).unwrap();
+    let profile_calls = Arc::new(AtomicUsize::new(0));
+    let active = Arc::new(AtomicUsize::new(0));
+    let max_active = Arc::new(AtomicUsize::new(0));
+    let result = compile_workspace(
+        &CompileOptions {
+            workspace: root.path().to_path_buf(),
+            intent_file: intent,
+            output: root.path().join("linear"),
+            batch_size: 8,
+            llm_concurrency: 4,
+            strategy: CompileStrategy::LinearV2,
+            use_extraction_cache: false,
+            conflict_context: ConflictContext::default(),
+            policy: CompilationPolicy::default(),
+        },
+        &ProfileParallelProbeExtractor {
+            profile_calls: Arc::clone(&profile_calls),
+            active,
+            max_active: Arc::clone(&max_active),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.manifest.compile_strategy, "linear-v2");
+    assert_eq!(result.manifest.metrics.profile_batches, 4);
+    assert_eq!(result.manifest.metrics.profile_llm_calls, 4);
+    assert_eq!(result.manifest.metrics.relation_candidate_edges, 6);
+    assert_eq!(result.manifest.metrics.relation_batches, 1);
+    assert_eq!(result.manifest.metrics.relation_llm_calls, 1);
+    assert_eq!(profile_calls.load(Ordering::SeqCst), 5);
+    assert_eq!(max_active.load(Ordering::SeqCst), 4);
+}
+
+#[test]
+fn dossier_strategy_uses_parallel_profiles_and_one_dossier_relation_batch() {
+    let (root, intent) = fixture();
+    let source = root.path().join("source");
+    for index in 1..4 {
+        fs::write(
+            source.join(format!("policy-{index}.md")),
+            format!("# 規則{index}\n\n事後レビューは2営業日以内に行う。\n"),
+        )
+        .unwrap();
+    }
+    fragarach_core::scan(&source, root.path()).unwrap();
+    let profile_calls = Arc::new(AtomicUsize::new(0));
+    let active = Arc::new(AtomicUsize::new(0));
+    let max_active = Arc::new(AtomicUsize::new(0));
+    let result = compile_workspace(
+        &CompileOptions {
+            workspace: root.path().to_path_buf(),
+            intent_file: intent,
+            output: root.path().join("dossier"),
+            batch_size: 8,
+            llm_concurrency: 4,
+            strategy: CompileStrategy::DossierV1,
+            use_extraction_cache: false,
+            conflict_context: ConflictContext::default(),
+            policy: CompilationPolicy::default(),
+        },
+        &ProfileParallelProbeExtractor {
+            profile_calls: Arc::clone(&profile_calls),
+            active,
+            max_active: Arc::clone(&max_active),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.manifest.compile_strategy, "dossier-v1");
+    assert_eq!(result.manifest.metrics.profile_batches, 4);
+    assert_eq!(result.manifest.metrics.relation_candidate_edges, 6);
+    assert_eq!(result.manifest.metrics.relation_batches, 1);
+    assert_eq!(result.manifest.metrics.relation_llm_calls, 1);
+    assert_eq!(profile_calls.load(Ordering::SeqCst), 5);
+    assert_eq!(max_active.load(Ordering::SeqCst), 4);
 }

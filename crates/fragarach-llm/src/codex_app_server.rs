@@ -13,11 +13,16 @@ use serde_json::{Value, json};
 
 use super::{
     CLAIM_EXTRACTION_CONTRACT_VERSION, ClaimExtractionRequest, ClaimExtractionResponse,
-    ClaimExtractor, DOCUMENT_PROFILE_CONTRACT_VERSION, DocumentProfileExtractionRequest,
-    DocumentProfileExtractionResponse, DocumentProfileExtractor, LlmUsage, StructuredClaims,
-    StructuredDocumentProfiles, claim_extraction_contract_fingerprint, claim_extraction_prompt,
-    document_profile_contract_fingerprint, document_profile_extraction_prompt,
-    document_profile_response_schema, response_schema,
+    ClaimExtractor, DOCUMENT_PROFILE_CONTRACT_VERSION, DOCUMENT_RELATION_CONTRACT_VERSION,
+    DocumentProfileExtractionRequest, DocumentProfileExtractionResponse, DocumentProfileExtractor,
+    DocumentRelationExtractionRequest, DocumentRelationExtractionResponse, LlmUsage,
+    SOURCE_PROFILE_CONTRACT_VERSION, StructuredClaims, StructuredDocumentProfiles,
+    StructuredDocumentRelations, StructuredSourceProfiles, claim_extraction_contract_fingerprint,
+    claim_extraction_prompt, document_profile_contract_fingerprint,
+    document_profile_extraction_prompt, document_profile_response_schema,
+    document_relation_contract_fingerprint, document_relation_extraction_prompt,
+    document_relation_response_schema, response_schema, source_profile_contract_fingerprint,
+    source_profile_extraction_prompt, source_profile_response_schema,
 };
 
 const APP_SERVER_PROTOCOL_VERSION: &str = "codex-app-server-v2";
@@ -230,6 +235,93 @@ impl DocumentProfileExtractor for CodexAppServerClaimExtractor {
             self.reasoning_effort,
             DOCUMENT_PROFILE_CONTRACT_VERSION,
             document_profile_contract_fingerprint()
+        )))
+    }
+
+    fn extract_source_profiles(
+        &self,
+        request: &DocumentProfileExtractionRequest,
+    ) -> Result<DocumentProfileExtractionResponse> {
+        if request.evidence.is_empty() {
+            bail!("source profile extraction requires evidence");
+        }
+        let prompt = source_profile_extraction_prompt(request)?;
+        let started = Instant::now();
+        let mut client = self.lock_client()?;
+        let outcome = client.extract_claims(
+            &self.model,
+            &self.reasoning_effort,
+            &prompt,
+            source_profile_response_schema(),
+            BASE_INSTRUCTIONS,
+        )?;
+        let parsed: StructuredSourceProfiles = serde_json::from_str(&outcome.message)
+            .context("Codex App Server response did not match the source profile schema")?;
+        Ok(DocumentProfileExtractionResponse {
+            profiles: parsed.profiles,
+            relations: Vec::new(),
+            provider: "codex-app-server".to_owned(),
+            model: self.model.clone(),
+            usage: LlmUsage {
+                prompt_tokens: outcome.prompt_tokens,
+                completion_tokens: outcome.completion_tokens,
+                duration_ms: started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+            },
+        })
+    }
+
+    fn source_profile_cache_identity(&self) -> Result<Option<String>> {
+        Ok(Some(format!(
+            "provider=codex-app-server;codex_version={};protocol={};model={};effort={};contract={};fingerprint={}",
+            self.codex_version,
+            APP_SERVER_PROTOCOL_VERSION,
+            self.model,
+            self.reasoning_effort,
+            SOURCE_PROFILE_CONTRACT_VERSION,
+            source_profile_contract_fingerprint()
+        )))
+    }
+
+    fn extract_relations(
+        &self,
+        request: &DocumentRelationExtractionRequest,
+    ) -> Result<DocumentRelationExtractionResponse> {
+        if request.evidence.is_empty() || request.candidates.is_empty() {
+            bail!("document relation extraction requires evidence and candidate pairs");
+        }
+        let prompt = document_relation_extraction_prompt(request)?;
+        let started = Instant::now();
+        let mut client = self.lock_client()?;
+        let outcome = client.extract_claims(
+            &self.model,
+            &self.reasoning_effort,
+            &prompt,
+            document_relation_response_schema(),
+            BASE_INSTRUCTIONS,
+        )?;
+        let parsed: StructuredDocumentRelations = serde_json::from_str(&outcome.message)
+            .context("Codex App Server response did not match the document relation schema")?;
+        Ok(DocumentRelationExtractionResponse {
+            relations: parsed.relations,
+            provider: "codex-app-server".to_owned(),
+            model: self.model.clone(),
+            usage: LlmUsage {
+                prompt_tokens: outcome.prompt_tokens,
+                completion_tokens: outcome.completion_tokens,
+                duration_ms: started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+            },
+        })
+    }
+
+    fn relation_cache_identity(&self) -> Result<Option<String>> {
+        Ok(Some(format!(
+            "provider=codex-app-server;codex_version={};protocol={};model={};effort={};contract={};fingerprint={}",
+            self.codex_version,
+            APP_SERVER_PROTOCOL_VERSION,
+            self.model,
+            self.reasoning_effort,
+            DOCUMENT_RELATION_CONTRACT_VERSION,
+            document_relation_contract_fingerprint()
         )))
     }
 }

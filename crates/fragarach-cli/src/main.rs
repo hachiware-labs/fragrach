@@ -83,6 +83,8 @@ enum Command {
         reasoning_effort: String,
         #[arg(long, default_value_t = 12)]
         batch_size: usize,
+        #[arg(long, value_enum, default_value_t = CompilerStrategy::DossierV1)]
+        compile_strategy: CompilerStrategy,
         #[arg(
             long,
             help = "Maximum concurrent LLM requests (default: Codex 8, Ollama 1)"
@@ -153,6 +155,14 @@ enum CompilerProvider {
     Ollama,
     CodexAppServer,
     Metadata,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CompilerStrategy {
+    GlobalV1,
+    LinearV2,
+    #[value(name = "dossier-v1", alias = "hybrid-v2")]
+    DossierV1,
 }
 
 #[derive(Debug, Subcommand)]
@@ -333,6 +343,7 @@ fn main() -> Result<()> {
             codex_command,
             reasoning_effort,
             batch_size,
+            compile_strategy,
             llm_concurrency,
             no_cache,
             as_of,
@@ -387,6 +398,11 @@ fn main() -> Result<()> {
                     batch_size,
                     llm_concurrency,
                     use_extraction_cache: !no_cache,
+                    strategy: match compile_strategy {
+                        CompilerStrategy::GlobalV1 => fragarach_build::CompileStrategy::GlobalV1,
+                        CompilerStrategy::LinearV2 => fragarach_build::CompileStrategy::LinearV2,
+                        CompilerStrategy::DossierV1 => fragarach_build::CompileStrategy::DossierV1,
+                    },
                     conflict_context: fragarach_build::ConflictContext {
                         as_of,
                         authority_precedence,
@@ -399,6 +415,7 @@ fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&result.manifest)?);
             } else {
                 println!("Knowledge Build: {}", result.output.display());
+                println!("Compile strategy: {}", result.manifest.compile_strategy);
                 println!(
                     "Status: {:?}; diagnostics: {} warning(s), {} error(s)",
                     result.manifest.status,

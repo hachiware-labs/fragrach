@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="../../assets/fragrach-logo.png" alt="Fragrach — The Anserer" width="360">
+</p>
+
 # 矛盾診断とコンパイルポリシー
 
 Fragrachは、矛盾を検出しても根拠が足りなければ一方を真実として選ばない。競合するClaimとEvidenceをKnowledge Buildへ残し、「AとBが矛盾しており、現在の根拠では判断できない」という診断を出す。

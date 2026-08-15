@@ -42,7 +42,9 @@ const PREDICATE_CATALOG: &[&str] = &[
 
 const OLLAMA_CONTEXT_LENGTH: u64 = 32 * 1024;
 pub const CLAIM_EXTRACTION_CONTRACT_VERSION: &str = "claim-extraction-v1";
-pub const DOCUMENT_PROFILE_CONTRACT_VERSION: &str = "document-position-extraction-v5";
+pub const DOCUMENT_PROFILE_CONTRACT_VERSION: &str = "document-position-extraction-v6";
+pub const SOURCE_PROFILE_CONTRACT_VERSION: &str = "source-profile-extraction-v1";
+pub const DOCUMENT_RELATION_CONTRACT_VERSION: &str = "document-relation-extraction-v3";
 
 pub fn claim_extraction_contract_fingerprint() -> String {
     let sentinel = ClaimExtractionRequest {
@@ -115,6 +117,78 @@ pub fn document_profile_contract_fingerprint() -> String {
     hasher.update(
         serde_json::to_vec(&document_profile_response_schema())
             .expect("the fixed document profile schema must serialize"),
+    );
+    let digest = hasher.finalize();
+    let mut fingerprint = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        write!(&mut fingerprint, "{byte:02x}").unwrap();
+    }
+    fingerprint
+}
+
+pub fn document_relation_contract_fingerprint() -> String {
+    let request = DocumentRelationExtractionRequest {
+        evidence: vec![PromptEvidence {
+            source_id: "__source_a__".to_owned(),
+            evidence_id: "__evidence__".to_owned(),
+            source_path: "__source_path__".to_owned(),
+            source_aliases: Vec::new(),
+            heading_path: Vec::new(),
+            authority: None,
+            lifecycle: None,
+            valid_from: None,
+            valid_to: None,
+            text: "__text__".to_owned(),
+        }],
+        candidates: vec![DocumentRelationCandidate {
+            source_id: "__source_a__".to_owned(),
+            target_id: "__source_b__".to_owned(),
+        }],
+    };
+    let prompt = document_relation_extraction_prompt(&request)
+        .expect("the fixed document relation request must serialize");
+    let mut hasher = Sha256::new();
+    hasher.update(DOCUMENT_RELATION_CONTRACT_VERSION.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(prompt.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(
+        serde_json::to_vec(&document_relation_response_schema())
+            .expect("the fixed document relation schema must serialize"),
+    );
+    let digest = hasher.finalize();
+    let mut fingerprint = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        write!(&mut fingerprint, "{byte:02x}").unwrap();
+    }
+    fingerprint
+}
+
+pub fn source_profile_contract_fingerprint() -> String {
+    let request = DocumentProfileExtractionRequest {
+        evidence: vec![PromptEvidence {
+            source_id: "__source__".to_owned(),
+            evidence_id: "__evidence__".to_owned(),
+            source_path: "__source_path__".to_owned(),
+            source_aliases: Vec::new(),
+            heading_path: Vec::new(),
+            authority: None,
+            lifecycle: None,
+            valid_from: None,
+            valid_to: None,
+            text: "__text__".to_owned(),
+        }],
+    };
+    let prompt = source_profile_extraction_prompt(&request)
+        .expect("the fixed source profile request must serialize");
+    let mut hasher = Sha256::new();
+    hasher.update(SOURCE_PROFILE_CONTRACT_VERSION.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(prompt.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(
+        serde_json::to_vec(&source_profile_response_schema())
+            .expect("the fixed source profile schema must serialize"),
     );
     let digest = hasher.finalize();
     let mut fingerprint = String::with_capacity(digest.len() * 2);
@@ -208,6 +282,27 @@ pub struct DocumentProfileExtractionResponse {
     pub usage: LlmUsage,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DocumentRelationCandidate {
+    pub source_id: String,
+    pub target_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DocumentRelationExtractionRequest {
+    pub evidence: Vec<PromptEvidence>,
+    pub candidates: Vec<DocumentRelationCandidate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DocumentRelationExtractionResponse {
+    pub relations: Vec<DocumentRelation>,
+    pub provider: String,
+    pub model: String,
+    #[serde(default)]
+    pub usage: LlmUsage,
+}
+
 pub trait DocumentProfileExtractor: Send + Sync {
     fn extract_profiles(
         &self,
@@ -216,6 +311,36 @@ pub trait DocumentProfileExtractor: Send + Sync {
 
     fn profile_cache_identity(&self) -> Result<Option<String>> {
         Ok(None)
+    }
+
+    fn extract_source_profiles(
+        &self,
+        request: &DocumentProfileExtractionRequest,
+    ) -> Result<DocumentProfileExtractionResponse> {
+        self.extract_profiles(request)
+    }
+
+    fn source_profile_cache_identity(&self) -> Result<Option<String>> {
+        self.profile_cache_identity()
+    }
+
+    fn extract_relations(
+        &self,
+        request: &DocumentRelationExtractionRequest,
+    ) -> Result<DocumentRelationExtractionResponse> {
+        let response = self.extract_profiles(&DocumentProfileExtractionRequest {
+            evidence: request.evidence.clone(),
+        })?;
+        Ok(DocumentRelationExtractionResponse {
+            relations: response.relations,
+            provider: response.provider,
+            model: response.model,
+            usage: response.usage,
+        })
+    }
+
+    fn relation_cache_identity(&self) -> Result<Option<String>> {
+        self.profile_cache_identity()
     }
 }
 
@@ -505,6 +630,110 @@ impl DocumentProfileExtractor for OllamaClaimExtractor {
             document_profile_contract_fingerprint()
         )))
     }
+
+    fn extract_source_profiles(
+        &self,
+        request: &DocumentProfileExtractionRequest,
+    ) -> Result<DocumentProfileExtractionResponse> {
+        if request.evidence.is_empty() {
+            bail!("source profile extraction requires evidence");
+        }
+        let request_body = json!({
+            "model": self.model,
+            "stream": false,
+            "think": false,
+            "format": source_profile_response_schema(),
+            "messages": [{
+                "role": "user",
+                "content": source_profile_extraction_prompt(request)?
+            }],
+            "options": ollama_request_options(self.seed)
+        });
+        let response = self
+            .client
+            .post(format!("{}/api/chat", self.endpoint))
+            .json(&request_body)
+            .send()
+            .context("failed to call Ollama /api/chat for source profiles")?
+            .error_for_status()
+            .context("Ollama returned an unsuccessful source profile response")?;
+        let envelope: OllamaChatResponse = response
+            .json()
+            .context("failed to parse Ollama source profile response")?;
+        let parsed: StructuredSourceProfiles = serde_json::from_str(&envelope.message.content)
+            .context("Ollama response did not match the source profile schema")?;
+        Ok(DocumentProfileExtractionResponse {
+            profiles: parsed.profiles,
+            relations: Vec::new(),
+            provider: "ollama".to_owned(),
+            model: self.model.clone(),
+            usage: LlmUsage {
+                prompt_tokens: envelope.prompt_eval_count.unwrap_or_default(),
+                completion_tokens: envelope.eval_count.unwrap_or_default(),
+                duration_ms: envelope.total_duration.unwrap_or_default() / 1_000_000,
+            },
+        })
+    }
+
+    fn source_profile_cache_identity(&self) -> Result<Option<String>> {
+        let base = ClaimExtractor::cache_identity(self)?.unwrap_or_default();
+        Ok(Some(format!(
+            "{base};source_profile_contract={SOURCE_PROFILE_CONTRACT_VERSION};source_profile_fingerprint={}",
+            source_profile_contract_fingerprint()
+        )))
+    }
+
+    fn extract_relations(
+        &self,
+        request: &DocumentRelationExtractionRequest,
+    ) -> Result<DocumentRelationExtractionResponse> {
+        if request.evidence.is_empty() || request.candidates.is_empty() {
+            bail!("document relation extraction requires evidence and candidate pairs");
+        }
+        let request_body = json!({
+            "model": self.model,
+            "stream": false,
+            "think": false,
+            "format": document_relation_response_schema(),
+            "messages": [{
+                "role": "user",
+                "content": document_relation_extraction_prompt(request)?
+            }],
+            "options": ollama_request_options(self.seed)
+        });
+        let response = self
+            .client
+            .post(format!("{}/api/chat", self.endpoint))
+            .json(&request_body)
+            .send()
+            .context("failed to call Ollama /api/chat for document relations")?
+            .error_for_status()
+            .context("Ollama returned an unsuccessful document relation response")?;
+        let envelope: OllamaChatResponse = response
+            .json()
+            .context("failed to parse Ollama document relation response")?;
+        let parsed: StructuredDocumentRelations =
+            serde_json::from_str(&envelope.message.content)
+                .context("Ollama response did not match the document relation schema")?;
+        Ok(DocumentRelationExtractionResponse {
+            relations: parsed.relations,
+            provider: "ollama".to_owned(),
+            model: self.model.clone(),
+            usage: LlmUsage {
+                prompt_tokens: envelope.prompt_eval_count.unwrap_or_default(),
+                completion_tokens: envelope.eval_count.unwrap_or_default(),
+                duration_ms: envelope.total_duration.unwrap_or_default() / 1_000_000,
+            },
+        })
+    }
+
+    fn relation_cache_identity(&self) -> Result<Option<String>> {
+        let base = ClaimExtractor::cache_identity(self)?.unwrap_or_default();
+        Ok(Some(format!(
+            "{base};relation_contract={DOCUMENT_RELATION_CONTRACT_VERSION};relation_fingerprint={}",
+            document_relation_contract_fingerprint()
+        )))
+    }
 }
 
 fn ollama_request_options(seed: u64) -> Value {
@@ -557,6 +786,18 @@ struct StructuredDocumentProfiles {
     relations: Vec<DocumentRelation>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StructuredDocumentRelations {
+    relations: Vec<DocumentRelation>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StructuredSourceProfiles {
+    profiles: Vec<DocumentProfile>,
+}
+
 fn document_profile_extraction_prompt(
     request: &DocumentProfileExtractionRequest,
 ) -> Result<String> {
@@ -598,11 +839,12 @@ fn document_profile_extraction_prompt(
          Relation kind is supporting detail retained with the source chunks. Use operational_position when\n\
          the evidence decides a position but does not require a more specific relation kind. This is the\n\
          normal kind for non_effective documents. Other kinds are limited to supersedes,\n\
-         amends, proposes_change_to, applies_to, exception_to, conflicts_with, approves,\n\
+         amends, proposes_change_to, applies_to, exception_to, conflicts_with, evaluates, approves,\n\
          implements_decision, records_execution_of, order_of_precedence, and derived_from. Emit a relation only when the evidence\n\
          explicitly supports it. conflicts_with means that two documents state incompatible values or rules;\n\
          emit it even when authority, time, or lifecycle metadata later allows deterministic resolution.\n\
-         approves means that an approval or decision record explicitly authorizes the target document, plan,\n\
+         evaluates means that an analysis explicitly compares or assesses a proposal; it does not make the\n\
+         proposal operative. approves means that an approval or decision record explicitly authorizes the target document, plan,\n\
          or revision. Use non_effective position for the approval record unless the evidence supports another\n\
          position. Do not use records_execution_of for authorization; reserve it for evidence that an approved\n\
          action was actually performed or applied. implements_decision means that an approved implementation\n\
@@ -636,6 +878,80 @@ fn document_profile_extraction_prompt(
          input IDs.\n\
          Return only JSON matching the supplied schema.\n\nINPUT:\n{payload}"
     ))
+}
+
+fn document_relation_extraction_prompt(
+    request: &DocumentRelationExtractionRequest,
+) -> Result<String> {
+    let payload = serde_json::to_string_pretty(request)
+        .context("failed to serialize document relation extraction input")?;
+    Ok(format!(
+        "Determine grounded operational relations only for the supplied candidate document pairs.\n\
+         Use only the supplied evidence. Do not emit profiles and do not evaluate pairs absent from candidates.\n\
+         Treat documents sharing a scenario or source-path dossier as one context. Evaluate every candidate pair\n\
+         independently; do not stop after finding one relation, and do not connect similar but distinct dossiers.\n\
+         Position is dominates, conditional, non_effective, or unresolved. Relation kind is operational_position,\n\
+         supersedes, amends, proposes_change_to, applies_to, exception_to, conflicts_with, evaluates, approves,\n\
+         implements_decision, records_execution_of, order_of_precedence, or derived_from.\n\
+         Emit a relation only when exact evidence supports it. conflicts_with requires incompatible values or rules.\n\
+         supersedes points from the final, corrected, or replacement document to the earlier document it explicitly\n\
+         updates or replaces. derived_from points from the dependent document to the identified source it uses.\n\
+         evaluates links an analysis to the proposal it explicitly assesses. approves means an approval record\n\
+         authorizes its target; records_execution_of requires actual performance.\n\
+         applies_to links a scoped instruction to its broader rule. exception_to requires an approved limited deviation.\n\
+         proposes_change_to remains non_effective. An intentional approved amendment is amends, not conflicts_with.\n\
+         Preserve affected source_clauses and target_clauses for amends and order_of_precedence.\n\
+         If force depends on a register, ledger, or approval record, cite that verifier evidence.\n\
+         Every relation must cite exact input source_id and evidence_id values. Return only schema-matching JSON.\n\n\
+         INPUT:\n{payload}"
+    ))
+}
+
+fn document_relation_response_schema() -> Value {
+    let profile_schema = document_profile_response_schema();
+    let relations = profile_schema
+        .pointer("/properties/relations")
+        .cloned()
+        .expect("document profile schema must contain relations");
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["relations"],
+        "properties": {"relations": relations}
+    })
+}
+
+fn source_profile_extraction_prompt(request: &DocumentProfileExtractionRequest) -> Result<String> {
+    let payload = serde_json::to_string_pretty(request)
+        .context("failed to serialize source profile extraction input")?;
+    Ok(format!(
+        "Compile each supplied source into exactly one grounded document profile.\n\
+         Use only the supplied evidence. Do not emit document relations. document_id is the controlled number\n\
+         printed in the document or metadata; revision is its explicit revision. Never substitute paths or IDs.\n\
+         Roles are normative, instruction, record, analysis, proposal, communication, or reference. Normative\n\
+         documents establish requirements; instructions operationalize them; records evidence events; reports\n\
+         that interpret records are analysis; proposals remain proposals until approved. force.level is mandatory,\n\
+         recommended, or informational. authority_rank is 0-10 and reflects authority, not relevance or recency.\n\
+         approved is true only when evidenced. Preserve exact scope identifiers. Empty scope is general scope.\n\
+         valid_from, valid_to, and observed_at are YYYY-MM-DD or null. YAML front matter is authoritative.\n\
+         official_record is true only for a controlled original, false for a known copy, null when undecided.\n\
+         Every profile must cite exact input source_id and evidence_id values. Return only schema-matching JSON.\n\n\
+         INPUT:\n{payload}"
+    ))
+}
+
+fn source_profile_response_schema() -> Value {
+    let profile_schema = document_profile_response_schema();
+    let profiles = profile_schema
+        .pointer("/properties/profiles")
+        .cloned()
+        .expect("document profile schema must contain profiles");
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["profiles"],
+        "properties": {"profiles": profiles}
+    })
 }
 
 fn document_profile_response_schema() -> Value {
@@ -727,7 +1043,7 @@ fn document_profile_response_schema() -> Value {
                     "properties": {
                         "id": {"type": "string", "minLength": 1},
                         "position": {"type": "string", "enum": ["dominates", "conditional", "non_effective", "unresolved"]},
-                        "kind": {"type": "string", "enum": ["operational_position", "supersedes", "amends", "proposes_change_to", "applies_to", "exception_to", "conflicts_with", "approves", "implements_decision", "records_execution_of", "order_of_precedence", "derived_from"]},
+                        "kind": {"type": "string", "enum": ["operational_position", "supersedes", "amends", "proposes_change_to", "applies_to", "exception_to", "conflicts_with", "evaluates", "approves", "implements_decision", "records_execution_of", "order_of_precedence", "derived_from"]},
                         "source_id": {"type": "string", "minLength": 1},
                         "target_id": {"type": "string", "minLength": 1},
                         "source_clauses": {"type": "array", "items": {"type": "string"}},
@@ -919,6 +1235,28 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(first.len(), 64);
         assert_ne!(first, claim_extraction_contract_fingerprint());
+    }
+
+    #[test]
+    fn split_contract_fingerprints_are_stable_and_separate() {
+        let source_profile = source_profile_contract_fingerprint();
+        let relation = document_relation_contract_fingerprint();
+
+        assert_eq!(source_profile, source_profile_contract_fingerprint());
+        assert_eq!(relation, document_relation_contract_fingerprint());
+        assert_eq!(source_profile.len(), 64);
+        assert_eq!(relation.len(), 64);
+        assert_ne!(source_profile, relation);
+        assert_ne!(source_profile, document_profile_contract_fingerprint());
+    }
+
+    #[test]
+    fn source_profile_schema_does_not_request_relations() {
+        let schema = source_profile_response_schema();
+
+        assert!(schema["properties"]["profiles"].is_object());
+        assert!(schema["properties"].get("relations").is_none());
+        assert_eq!(schema["required"], json!(["profiles"]));
     }
 
     #[test]

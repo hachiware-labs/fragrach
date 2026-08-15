@@ -1,46 +1,87 @@
+<p align="center">
+  <img src="assets/fragrach-logo.png" alt="Fragrach — The Anserer" width="420">
+</p>
+
 # Fragrach
 
-Fragrachは、資料群と利用目的から、RAGへ投入する前の知識をコンパイルするツールです。検索APIやチャットUIは提供せず、原本へ遡れるEvidence、Claim、競合、検索仕様、回答仕様を目的別のKnowledge Buildとして生成します。
+**Dependency-aware Living Corpus RAG**
 
-現在の開発版には、Rust CLI、差分走査、Usage Intent、OllamaまたはCodex App ServerによるEvidence付きClaim抽出、上限付き並列LLM実行、Source単位の抽出キャッシュと中断再開、時点・権威性・矛盾・不足の診断、Knowledge Build、Report、JSONL Exporter、LLMを呼ばない再コンパイル、npmランチャーがあります。npmレジストリにはまだ公開していません。
+[日本語](README_ja.md)
 
-## Fragrachが対象とするRAG
+Fragrach analyzes a corpus and compiles the metadata that should be attached to each document for use by a RAG system.
 
-Fragrachの主要ターゲットは、調整済みのHybrid RAGでも関連文書は取得できるものの、質問に対してどの文書を採用すべきかを関連度だけでは決められないケースです。検索器を置き換えるのではなく、Hybrid検索やrerankerへ渡す前の文書群に、版、権威、適用時点、例外、実施記録、矛盾と原文根拠を加えます。
+Fragrach is not a vector database, retrieval server, chat UI, or answer generator. It compiles knowledge and publishes retrieval and answer contracts that an existing RAG system can consume.
 
-特に、規程、仕様、手順、FAQ、提案、承認記録、障害報告などが同じフォルダに蓄積され、改訂や追加が続く企業内文書を想定しています。導入単位のスイートスポットは、全社の全データを一つへ集約するセマンティック基盤ではなく、RAGを導入する一つの部門や業務チームが管理している文書フォルダです。そのフォルダと利用目的をFragrachへ渡し、用途別のKnowledge Buildを既存RAGへ登録します。
+The project is under development. The Rust CLI and npm launcher exist in this repository, but the npm package has not been published to the registry.
 
-次のような場合に効果が期待できます。
+## Where Fragrach fits
 
-- 旧版と現行版が同時に検索される。
-- 正式規程、FAQ、メモ、草案のどれを優先すべきかが質問によって変わる。
-- 一般規則、個別例外、実施記録を分けて回答する必要がある。
-- 文書間の矛盾を隠さず、判断できない場合は回答や公開を止めたい。
-- 文書更新後に、影響するClaim、Relation、Conflictを再コンパイルしたい。
+Fragrach targets collections where relevance alone cannot determine which retrieved document should govern an answer. Typical examples contain current and obsolete revisions, approved rules and drafts, general rules and scoped exceptions, or policies and execution records in the same search domain.
 
-反対に、少数の静的な文書から関連箇所を探すだけなら、まずchunking、Hybrid検索、rerankerを調整する方が単純で高速です。構造化DBの集計や、全社規模のOntology・アクセス制御基盤もFragrachの対象外です。
+### Why ordinary retrieval becomes unreliable
 
-現在の企業文書テストコーパスは、40部門を独立したRAG領域として扱い、一部門あたり72文書・36問で構成しています。詳細なActual E2E評価は、5評価群、用途ごと12文書、合計30問まで実施しています。部門フォルダという導入単位には評価設計も合っていますが、実企業文書での推奨文書数や上限はまだ確定していません。
+In enterprise collections, the correct answer changes as laws, internal standards, and new findings evolve. Graph, dense, and sparse retrieval can surface related documents, but retrieval alone does not continuously judge effective dates, scope, authority, or precedence.
 
-## 開発中のCLI
+![Why RAG struggles to stay correct](docs/assets/readme/rag-current-correctness-en.png)
 
-ワークスペースを初期化します。
+If those changes and supersession relationships are not maintained, obsolete-but-once-correct documents accumulate and become retrieval noise.
+
+![An unmaintained RAG becomes less useful over time](docs/assets/readme/rag-utility-decay-en.png)
+
+### What Fragrach precompiles
+
+Fragrach moves relationship analysis to ingestion time. It compiles document structure, metadata, dependencies, applicability, and version relationships into a Knowledge Build, so downstream retrieval can distinguish currently applicable documents from obsolete or out-of-scope candidates.
+
+![Fragrach precompiles documents](docs/assets/readme/fragrach-precompile-en.png)
+
+The normal flow is:
+
+```text
+source documents
+  -> fragarach scan
+  -> fragarach compile
+  -> Knowledge Build
+  -> downstream Sparse / Dense / Hybrid index
+  -> Hybrid top 20
+  -> Fragrach Soft Rerank v1
+  -> context construction and answer generation
+```
+
+Compilation and query-time reranking are separate operations. `fragarach compile` creates the metadata, Decision Packets, and `retrieval-profile.yaml` needed by the reranker. The Rust library function `rerank()` applies that profile to an already retrieved candidate list. There is currently no standalone `fragarach rerank` CLI command.
+
+## Final evaluation results
+
+The final evaluation updated on August 10, 2026 reports the following results. On 125 questions from the 500-document Enterprise Fragrach 500 subset, Soft Rerank v1 kept the same top-20 candidate set while improving answer Accuracy and DVAA, which measures whether the answer adopted evidence that was valid for the question.
+
+| Condition | Recall@20 | Accuracy | DVAA |
+|---|---:|---:|---:|
+| Hybrid | 97.07% | 55.20% (69/125) | 0.6689 |
+| Hybrid + Fragrach Soft Rerank v1 | 97.07% | 56.00% (70/125) | 0.7281 |
+
+A separate practical holdout used 200 questions from 100 previously unseen document series. Its best Fragrach configuration reached 98.50% Accuracy and a 96.00% fully grounded answer rate. The fully grounded answer rate requires a correct answer, complete supporting evidence, and valid time, scope, approval, issuer, and document relationships; it is not DVAA.
+
+| Condition | Recall@5 | Accuracy | Fully grounded answer rate |
+|---|---:|---:|---:|
+| Raw Ruri Dense | 92.75% | 78.50% (157/200) | 0.00% (0/200) |
+| Fragrach Ruri Packet | 97.50% | 98.50% (197/200) | 96.00% (192/200) |
+
+These are development evaluations on fixed corpora and model configurations, not guaranteed production performance. See the [final evaluation report](docs/evaluations/final-metrics-2026-08-09_ja.md) for all baselines, confidence intervals, metric definitions, and limitations.
+
+## Build and run the CLI from source
+
+The workspace requires Rust 1.94 or later. Claim extraction also requires either a local Ollama model or a signed-in Codex CLI when the Codex App Server provider is selected.
+
+Initialize a workspace and scan a source folder:
 
 ```powershell
 cargo run -p fragarach-cli -- init .
-```
 
-文書フォルダを走査します。
-
-```powershell
 cargo run -p fragarach-cli -- scan `
   --source tests/corpora/aobane-industries-ja/sources `
   --workspace .
 ```
 
-成果物は`.fragarach/manifest.json`と`.fragarach/parsed/`へ保存され、走査状態は`.fragarach/workspace.db`へ記録されます。同じ内容を再走査した場合、Parsed Documentを再利用します。
-
-Intentを検証し、ローカルOllamaでKnowledge Buildを生成します。
+Validate a Usage Intent and compile a Knowledge Build with Ollama:
 
 ```powershell
 cargo run -p fragarach-cli -- intent validate `
@@ -53,7 +94,7 @@ cargo run -p fragarach-cli -- compile `
   --output target/design-review-build
 ```
 
-同じコンパイル契約をCodex App Serverで実行する場合は、Codex CLIへ事前にサインインしてProviderを切り替えます。
+Use the Codex App Server provider with the same compilation contract:
 
 ```powershell
 cargo run -p fragarach-cli -- compile `
@@ -65,58 +106,119 @@ cargo run -p fragarach-cli -- compile `
   --output target/design-review-codex-build
 ```
 
-```powershell
-cargo run -p fragarach-cli -- cache report `
-  --workspace .
+After building the executable, the equivalent command is:
 
+```powershell
+target/debug/fragarach compile `
+  --workspace . `
+  --intent tests/corpora/aobane-industries-ja/intents/design-review.yaml `
+  --provider codex-app-server `
+  --model gpt-5.6-luna `
+  --reasoning-effort low `
+  --output target/design-review-codex-build
+```
+
+`dossier-v1` is the default compilation strategy. `global-v1` and `linear-v2` remain available as explicit comparison strategies.
+
+## Knowledge Build outputs
+
+Successful compilation publishes an immutable build directory. Important artifacts include:
+
+| Artifact | Purpose |
+|---|---|
+| `build-manifest.json` | Build status, model, usage, cache statistics, and artifact hashes |
+| `evidence.jsonl` | Source text and provenance needed to return to the original document |
+| `claims.jsonl` | Normalized claims with Evidence references |
+| `document-profiles.jsonl` | Role, authority, scope, time, and approval metadata by document |
+| `document-relations.jsonl` | Supersession, amendment, exception, approval, and other relations |
+| `decision-packets.jsonl` | Materials classified as `governing`, `verifier`, `contender`, or `excluded` |
+| `conflicts.jsonl` / `diagnostics.jsonl` | Resolved and unresolved conflicts, rejected data, and missing inputs |
+| `retrieval-profile.yaml` | Retrieval filters and the standard rerank contract |
+| `answer-contract.yaml` | Citation and unresolved-conflict disclosure requirements |
+
+`compile` does not create embeddings, execute Hybrid retrieval, rerank a query result, or generate an answer.
+
+## Standard reranker: Fragrach Soft Rerank v1
+
+The library default is `fragrach-soft-rerank-v1`. It accepts a relevance-ordered Hybrid candidate list of at most 20 documents and changes only presentation order.
+
+```text
+adjusted_rank = original_rank + role_offset
+```
+
+| Decision Packet role | Offset |
+|---|---:|
+| `governing` | -4 |
+| `verifier` | -2 |
+| unclassified | 0 |
+| `contender` | +2 |
+| `excluded` | +6 |
+
+Lower adjusted ranks sort first. Ties retain the original retrieval order. The candidate set is invariant: v1 never adds, removes, or backfills a document. Passing more than 20 candidates returns `RerankError::CandidateLimitExceeded` instead of silently truncating the list.
+
+When a document has several packet roles, v1 selects one in this order: `excluded`, `contender`, `verifier`, `governing`.
+
+The default Rust entry point is:
+
+```rust
+use fragarach_resolver::{RerankRole, rerank};
+
+#[derive(Debug)]
+struct Candidate {
+    document_id: String,
+    role: Option<RerankRole>,
+}
+
+let candidates = vec![
+    Candidate {
+        document_id: "policy-v1".into(),
+        role: Some(RerankRole::Excluded),
+    },
+    Candidate {
+        document_id: "policy-v2".into(),
+        role: Some(RerankRole::Governing),
+    },
+];
+
+let reranked = rerank(candidates, |candidate| candidate.role.clone())
+    .expect("the Hybrid candidate list must contain at most 20 documents");
+
+assert_eq!(reranked[0].document_id, "policy-v2");
+```
+
+Call `soft_rerank_v1()` when the algorithm version must be explicit. A future algorithm will receive a new versioned function before the library default changes. Answer-time Fragrach metadata and Sparse/Dense multi-chunk expansion remain separate downstream stages.
+
+See [the reranking specification](docs/reranking_ja.md) for the complete v1 contract.
+
+## Export for downstream RAG
+
+Export a complete Knowledge Build as JSONL:
+
+```powershell
 cargo run -p fragarach-cli -- export `
   --build target/design-review-build `
   --output target/design-review-rag.jsonl
+```
 
-# 旧Buildとの差分だけを出力（upsert / delete / commit）
+Export only the upsert and delete operations between two builds:
+
+```powershell
 cargo run -p fragarach-cli -- export `
   --base-build target/design-review-build-v1 `
   --build target/design-review-build-v2 `
   --output target/design-review-v1-v2.delta.jsonl
 ```
 
-## テスト
+## Tests and documentation
 
 ```powershell
 cargo test --workspace
 npm test
 ```
 
-架空社内コーパスは`tests/corpora/aobane-industries-ja/`、コーパスの要求定義は`docs/corpus-requirements_ja.md`、通常のRAGとの比較手順は`tests/benchmarks/rag-comparison/`にあります。
-
-矛盾をWarningとして残す方法と、コンパイル時の停止・明示的解決を切り替える方針は`docs/architecture/conflict-diagnostics_ja.md`にあります。
-
-現行版の操作方法は`docs/user-manual_ja.md`、そのマニュアルだけを読んだ利用者視点の評価は`docs/user-manual-reader-review_ja.md`にあります。
-
-現在の`compile`がEvidenceからKnowledge Buildを作る処理と、キャッシュ・検証・Conflictゲートの境界は`docs/compilation-pipeline_ja.md`にあります。
-
-参照データの確定、手法調査、仮説検証、Provider比較、精度改善を反復する計画は`docs/accuracy-improvement-plan_ja.md`にあります。
-
-2026年時点のRAG改善手法、検索時補正と事前コンパイルの比較、採用する比較条件と仮説は`docs/research/rag-methods-2026_ja.md`にあります。
-
-Sparse / Dense / rerank、時点・権威性・矛盾、複数文書関係、回答検証までの詳細調査と、Fragrachで比較実装する優先順位は`docs/research/rag-existing-methods-deep-dive-2026_ja.md`にあります。
-
-企業内で文書の効力が変わる条件、業種・部門別の活用ケース、現在の文書関係モデルに不足するScope・例外・正本性・Lineageの要件は`docs/research/enterprise-document-validity-cases_ja.md`にあります。
-
-40部門・1,440問のOracle Relation Dossier評価と、Codex App Server / Lunaで実際にコンパイルした2用途のRaw・Actual比較は`docs/evaluations/enterprise-diverse-evaluation-2026-08-02_ja.md`にあります。実験台帳の保存規約は`docs/evaluation-recording_ja.md`にあります。
-
-Weighted Metadata、Filter-first、Relation Graph、質問時LLM、Compiled Hybridを同じ候補集合で比較する実装順と採用ゲートは`docs/document-validity-improvement-plan_ja.md`にあります。
-
-20文書からのProfile・Relation抽出と、固定28問に対するGemma 4 / Codex App Server・S2 / S3のE2E比較は`docs/research/document-profile-extraction-comparison_ja.md`にあります。
-
-未調整20問でS3の一般化を測り、初回Oracle 65%から一般規則の修正後100%、Codex実抽出85%まで改善した経緯は`docs/research/document-validity-holdout-comparison_ja.md`にあります。
-
-この20問は改善後には開発集合となったため、2026-08-04の再実行は一般化評価ではなく回帰・抽出契約監査として扱います。現行Luna抽出込みはStrict case 70%、Decision 95.3%で、Goldにだけある権威順位への依存と、1本のRelation欠落が3問へ波及する評価上の問題を`docs/evaluations/document-validity-regression-audit-2026-08-04_ja.md`に記録しています。
-
-外部VersionQAでは、DVAAのGoldを文書IDから本文span・不在証明・完全な版一覧・意味差分のEvidence Unitへ修正し、原文と矛盾する7問を分母から隔離しました。従来Decision Packetの再採点53問はDVAA-Gross 32.1%でしたが、質問相対のVersion／Inventory／Diff PacketではEvidence Ceiling、LunaのAnswer Accuracy、DVAA-Gross／Netが53問すべて100%になりました。この集合は改善に使用した開発集合であり、とくに暗黙変更は4問しか採点できないため、一般化性能とは扱いません。実装、失敗原因、凍結条件は`docs/evaluations/versionqa-external-pilot-2026-08-04_ja.md`に記録しています。
-
-標準RAG、CRAG / Self-RAG、RAPTOR / GraphRAG、HippoRAG / PropRAG、信頼性・競合・時間対応RAGとS3の能力比較は`docs/research/fragrach-s3-prior-methods-comparison_ja.md`にあります。
-
-Fragrachの現行方式、強み・弱み、単純RAG、AWS Context Ontology Accelerator、AI Powered Knowledge Graph Generatorとの差と、Knowledge Compilerとして差異を広げる実装優先順位は`docs/research/fragrach-differentiation-strategy-2026-08-02_ja.md`にあります。
-
-Knowledge Buildの縦切り実装からnpm配布、マニュアル再評価までの順序は`docs/implementation-plan-phase1_ja.md`にあります。
+- [Japanese README](README_ja.md)
+- [User manual](docs/user-manual_ja.md)
+- [Compilation pipeline](docs/compilation-pipeline_ja.md)
+- [Standard reranking contract](docs/reranking_ja.md)
+- [Evaluation recording rules](docs/evaluation-recording_ja.md)
+- [Final evaluation (Japanese)](docs/evaluations/final-metrics-2026-08-09_ja.md)

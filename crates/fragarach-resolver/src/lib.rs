@@ -9,10 +9,16 @@ use fragarach_ir::{
 };
 
 mod normalization;
+mod rerank;
 
 pub use normalization::{
     NormalizationDiagnostic, NormalizedDocumentSet, normalize_document_set,
     normalize_resolution_context, validate_document_profiles,
+};
+pub use rerank::{
+    CONTENDER_OFFSET, EXCLUDED_OFFSET, GOVERNING_OFFSET, RerankError, RerankRole,
+    STANDARD_RERANK_CANDIDATE_LIMIT, STANDARD_RERANKER_NAME, StandardReranker, UNCLASSIFIED_OFFSET,
+    VERIFIER_OFFSET, primary_role, rerank, role_offset, soft_rerank_v1,
 };
 
 pub trait DocumentResolver {
@@ -215,7 +221,9 @@ impl DocumentResolver for RelationGraphResolver {
             ) || (*source_disposition == Disposition::Excluded
                 && !matches!(
                     relation.kind,
-                    RelationKind::DerivedFrom | RelationKind::ProposesChangeTo
+                    RelationKind::DerivedFrom
+                        | RelationKind::ProposesChangeTo
+                        | RelationKind::Evaluates
                 ))
             {
                 continue;
@@ -352,6 +360,10 @@ impl DocumentResolver for RelationGraphResolver {
                     );
                 }
                 RelationKind::ProposesChangeTo => {
+                    append_relation_path(&mut outcome.decisions[source_index], relation);
+                    append_relation_path(&mut outcome.decisions[target_index], relation);
+                }
+                RelationKind::Evaluates => {
                     append_relation_path(&mut outcome.decisions[source_index], relation);
                     append_relation_path(&mut outcome.decisions[target_index], relation);
                 }

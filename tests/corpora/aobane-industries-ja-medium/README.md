@@ -75,4 +75,4 @@
 
 Mediumの実測では、厳格版の設計レビューは事後レビュー期限の未解決矛盾2件を検出して公開を停止しました。Warning版では矛盾を成果物へ残し、Raw RAGとの評価に使用できました。運用要件に合わせ、決定不能な知識を下流へ渡してよい場合だけWarning版を使ってください。
 
-旧100文書スナップショットの検索と回答品質は[旧Mediumコーパス評価結果](../../benchmarks/rag-comparison/MEDIUM_FINDINGS_ja.md)、500文書・100問へ拡張した後の第1段階評価は[500文書評価結果](../../benchmarks/rag-comparison/MEDIUM_500_FINDINGS_ja.md)にまとめています。
+このコーパスは回帰確認用の小規模fixtureとして保持します。現行の横断評価は[最終評価](../../../docs/evaluations/final-metrics-2026-08-09_ja.md)を参照してください。

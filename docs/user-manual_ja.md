@@ -1,11 +1,17 @@
+<p align="center">
+  <img src="../assets/fragrach-logo.png" alt="Fragrach — The Anserer" width="360">
+</p>
+
 # Fragrach ユーザーマニュアル
+
+**Dependency-aware Living Corpus RAG**
 
 対象バージョン: 0.1.0 開発版  
 更新日: 2026-08-01
 
 ## Fragrachの役割
 
-Fragrachは、RAGへ文書を登録する前に、資料群を利用目的別の知識へ変換するCLIです。通常のRAGが文書を検索して回答するのに対し、Fragrachはその入力を準備します。検索API、ベクトルデータベース、チャット画面は提供しません。
+Fragrachは、RAGへ登録するコーパスを解析し、各文書に付与すべきメタデータをコンパイルするCLIです。通常のRAGが文書を検索して回答するのに対し、Fragrachはその入力を準備します。検索API、ベクトルデータベース、チャット画面は提供しません。
 
 ```mermaid
 flowchart LR
@@ -201,11 +207,14 @@ fragarach compile `
   --output C:\knowledge\builds\document-control-v1
 ```
 
-`metadata`は、明示された文書管理metadataをDocument Profile、Position Relation、Decision Packetへ変換し、通常の検証を行う限定providerです。本文からClaimや欠けたPositionを推定せず、`claims.jsonl`は空になります。必要な管理情報が原文にない場合は、OllamaまたはCodex App Serverによる抽出を使ってください。
+`metadata`は、明示された文書管理metadataをDocument Profile、Position Relation、Decision Packetへ変換し、通常の検証を行う限定providerです。`scope`にはJSON objectを指定でき、`organization` / `entity`、`jurisdiction`、`site`、`product`、`asset`、`person`、`project`、`lot`、`contract`の各値は文字列または文字列配列として扱います。本文からClaimや欠けたPositionを推定せず、`claims.jsonl`は空になります。必要な管理情報が原文にない場合は、OllamaまたはCodex App Serverによる抽出を使ってください。
+
+既知のRelation familyでは、scopeの対象文書ID、本文に完全一致で明記された既知document IDの順に接続先を決定します。候補が複数で一意に決められない場合は推測で接続せず、`FRG-REL-UNRESOLVED-REQUIRED-SLOT` warningを出します。warningの対象文書へscopeを追加するか、LLM providerで不足部分を補完してください。
 
 必要に応じて、次のオプションを使います。
 
 - `--provider`: `ollama`、`codex-app-server`、`metadata`。既定は`ollama`
+- `--compile-strategy`: `dossier-v1`、`global-v1`、`linear-v2`。既定は`dossier-v1`。旧名`hybrid-v2`も互換aliasとして受け付けるが、新規Build Manifestには`dossier-v1`と記録する
 - `--ollama-endpoint`: 既定は`http://127.0.0.1:11434`
 - `--codex-command`: Codex CLIの実行ファイル。既定は`codex`
 - `--reasoning-effort`: Codexモデルのreasoning effort。既定は`low`
@@ -340,7 +349,7 @@ Oracleは「正しい知識単位を作れた場合の上限」であり、Fragr
 
 この結果は架空コーパスと一つのモデルによる開発時評価です。実データで導入判断する前に、利用目的ごとの質問、時点、禁止回答、人手判定を用意し、Raw RAGと並行評価してください。推奨文書数、メモリ、ディスク容量の保証値はまだありません。
 
-47文書の初回コンパイルは、Intentごとに約300秒から599秒、LLM呼び出し47回、入力token約13.5万から13.6万でした。4 Intentの合計は約30分25秒、入力542,495 tokenです。検証規則だけを更新した`recompile`は、LLM 0回、35msでした。現在の`compile`は同じ抽出条件の応答をSource単位でキャッシュするため、2回目以降は未変更バッチのLLM呼び出しを省略します。端末、モデル、文書構成、キャッシュ状態で変わるため、これらは性能保証ではありません。詳しい条件と設問別結果は`tests/benchmarks/rag-comparison/UPPER_BOUND_FINDINGS_ja.md`を参照してください。
+47文書の初回コンパイルは、Intentごとに約300秒から599秒、LLM呼び出し47回、入力token約13.5万から13.6万でした。4 Intentの合計は約30分25秒、入力542,495 tokenです。検証規則だけを更新した`recompile`は、LLM 0回、35msでした。現在の`compile`は同じ抽出条件の応答をSource単位でキャッシュするため、2回目以降は未変更バッチのLLM呼び出しを省略します。端末、モデル、文書構成、キャッシュ状態で変わるため、これらは性能保証ではありません。精度評価は[最終評価](evaluations/final-metrics-2026-08-09_ja.md)を参照してください。
 
 ## npmパッケージをローカル検証する
 

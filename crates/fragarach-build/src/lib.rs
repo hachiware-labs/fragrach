@@ -17,9 +17,10 @@ use sha2::{Digest, Sha256};
 mod pipeline;
 
 pub use pipeline::{
-    BuildReport, CompileOptions, CompileResult, ExtractionCacheEntrySummary, ExtractionCacheReport,
-    RagDeltaSummary, RecompileOptions, compile_workspace, export_rag_delta_jsonl, export_rag_jsonl,
-    read_build_report, read_extraction_cache_report, recompile_build,
+    BuildReport, CompileOptions, CompileResult, CompileStrategy, ExtractionCacheEntrySummary,
+    ExtractionCacheReport, RagDeltaSummary, RecompileOptions, compile_workspace,
+    export_rag_delta_jsonl, export_rag_jsonl, read_build_report, read_extraction_cache_report,
+    recompile_build,
 };
 
 pub const REQUIRED_BUILD_ARTIFACTS: &[(&str, &str)] = &[
@@ -87,6 +88,7 @@ pub fn analyze_conflicts_with_metadata(
             let right = &claims[right_index];
             if !same_claim_slot(left, right)
                 || claim_objects_equivalent(left, right)
+                || claim_objects_compatible(left, right)
                 || same_source_conditional_alternatives(left, right)
             {
                 continue;
@@ -498,6 +500,49 @@ fn claim_objects_equivalent(left: &Claim, right: &Claim) -> bool {
                     .zip(normalized_duration_constraint(right))
                     .is_some_and(|(left, right)| left == right)
         })
+}
+
+fn claim_objects_compatible(left: &Claim, right: &Claim) -> bool {
+    if !left
+        .predicate
+        .trim()
+        .eq_ignore_ascii_case(right.predicate.trim())
+        || !left
+            .predicate
+            .trim()
+            .eq_ignore_ascii_case("requires_approval")
+    {
+        return false;
+    }
+
+    let left_is_detail = is_approval_role_detail(&left.object);
+    let right_is_detail = is_approval_role_detail(&right.object);
+    (left.object.as_bool() == Some(true) && right_is_detail)
+        || (right.object.as_bool() == Some(true) && left_is_detail)
+        || (left_is_detail
+            && right_is_detail
+            && !claim_sources(left).is_disjoint(&claim_sources(right)))
+}
+
+fn is_approval_role_detail(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(role) => {
+            let role = role.trim();
+            !role.is_empty()
+                && !matches!(
+                    role.to_ascii_lowercase().as_str(),
+                    "true" | "false" | "yes" | "no"
+                )
+                && !matches!(role, "あり" | "なし" | "必要" | "不要")
+        }
+        serde_json::Value::Array(roles) => {
+            !roles.is_empty()
+                && roles
+                    .iter()
+                    .all(|role| role.as_str().is_some_and(|role| !role.trim().is_empty()))
+        }
+        _ => false,
+    }
 }
 
 fn scalar_claim_text(value: &serde_json::Value) -> Option<&str> {
@@ -1380,6 +1425,70 @@ mod tests {
 
         singleton.object = json!(["営業責任者", "輸出管理責任者"]);
         assert!(!claim_objects_equivalent(&scalar, &singleton));
+    }
+
+    #[test]
+    fn approval_requirement_assertion_and_role_details_are_compatible() {
+        let mut required = conflicting_claim("required", "unused");
+        required.predicate = "requires_approval".to_owned();
+        required.object = json!(true);
+        let mut roles = conflicting_claim("roles", "unused");
+        roles.predicate = "requires_approval".to_owned();
+        roles.object = json!(["部門長", "統制責任者"]);
+
+        let analysis = analyze_conflicts(
+            &[required, roles],
+            &ConflictContext::default(),
+            &CompilationPolicy::default(),
+        );
+
+        assert!(analysis.conflicts.is_empty());
+    }
+
+    #[test]
+    fn approval_roles_from_the_same_document_are_additive() {
+        let mut department = conflicting_claim("department", "unused");
+        department.predicate = "requires_approval".to_owned();
+        department.object = json!("部門長");
+        let mut control = conflicting_claim("control", "unused");
+        control.predicate = "requires_approval".to_owned();
+        control.object = json!(["部門長", "統制責任者"]);
+        control.evidence[0].source_id = department.evidence[0].source_id.clone();
+
+        let analysis = analyze_conflicts(
+            &[department, control],
+            &ConflictContext::default(),
+            &CompilationPolicy::default(),
+        );
+
+        assert!(analysis.conflicts.is_empty());
+    }
+
+    #[test]
+    fn approval_requirement_denial_and_different_role_details_still_conflict() {
+        let mut denied = conflicting_claim("denied", "unused");
+        denied.predicate = "requires_approval".to_owned();
+        denied.object = json!(false);
+        let mut first_roles = conflicting_claim("first-roles", "unused");
+        first_roles.predicate = "requires_approval".to_owned();
+        first_roles.object = json!(["部門長", "統制責任者"]);
+        let mut second_roles = conflicting_claim("second-roles", "unused");
+        second_roles.predicate = "requires_approval".to_owned();
+        second_roles.object = json!(["法務責任者"]);
+
+        let denied_analysis = analyze_conflicts(
+            &[denied, first_roles.clone()],
+            &ConflictContext::default(),
+            &CompilationPolicy::default(),
+        );
+        let roles_analysis = analyze_conflicts(
+            &[first_roles, second_roles],
+            &ConflictContext::default(),
+            &CompilationPolicy::default(),
+        );
+
+        assert_eq!(denied_analysis.conflicts.len(), 1);
+        assert_eq!(roles_analysis.conflicts.len(), 1);
     }
 
     fn exception_relation(source: &str, target: &str) -> DocumentRelation {

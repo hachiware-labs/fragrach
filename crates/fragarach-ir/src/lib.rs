@@ -277,6 +277,7 @@ pub enum RelationKind {
     AppliesTo,
     ExceptionTo,
     ConflictsWith,
+    Evaluates,
     Approves,
     ImplementsDecision,
     RecordsExecutionOf,
@@ -601,6 +602,30 @@ pub struct BuildMetrics {
     #[serde(default)]
     pub profile_completion_tokens: u64,
     #[serde(default)]
+    pub profile_duration_ms: u64,
+    #[serde(default)]
+    pub profile_wall_duration_ms: u64,
+    #[serde(default)]
+    pub profile_batches: usize,
+    #[serde(default)]
+    pub relation_candidate_edges: usize,
+    #[serde(default)]
+    pub relation_batches: usize,
+    #[serde(default)]
+    pub relation_cache_hits: usize,
+    #[serde(default)]
+    pub relation_cache_misses: usize,
+    #[serde(default)]
+    pub relation_llm_calls: usize,
+    #[serde(default)]
+    pub relation_prompt_tokens: u64,
+    #[serde(default)]
+    pub relation_completion_tokens: u64,
+    #[serde(default)]
+    pub relation_duration_ms: u64,
+    #[serde(default)]
+    pub relation_wall_duration_ms: u64,
+    #[serde(default)]
     pub document_profiles: usize,
     #[serde(default)]
     pub document_relations: usize,
@@ -622,12 +647,18 @@ pub struct KnowledgeBuildManifest {
     pub generated_at: DateTime<Utc>,
     pub status: KnowledgeBuildStatus,
     pub intent_id: String,
+    #[serde(default = "default_compile_strategy")]
+    pub compile_strategy: String,
     pub source_manifest_hash: String,
     pub provider: String,
     pub model: String,
     pub artifacts: Vec<BuildArtifact>,
     pub diagnostics: DiagnosticCounts,
     pub metrics: BuildMetrics,
+}
+
+fn default_compile_strategy() -> String {
+    "global-v1".to_owned()
 }
 
 impl Default for CompilationPolicy {
@@ -771,6 +802,7 @@ mod tests {
             generated_at: Utc::now(),
             status: KnowledgeBuildStatus::CompletedWithWarnings,
             intent_id: "design-review".to_owned(),
+            compile_strategy: "global-v1".to_owned(),
             source_manifest_hash: "sha256:abc".to_owned(),
             provider: "mock".to_owned(),
             model: "fixed".to_owned(),

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/fragrach-logo.png" alt="Fragrach — The Anserer" width="360">
+</p>
+
 # Fragrach
 
 Fragrach compiles source documents into evidence-preserving Knowledge Builds before they are ingested into a RAG system.

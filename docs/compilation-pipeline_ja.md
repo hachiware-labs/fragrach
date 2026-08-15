@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="../assets/fragrach-logo.png" alt="Fragrach — The Anserer" width="360">
+</p>
+
 # Fragrachのコンパイル処理
 
 Fragrachの`compile`は、文書を検索用チャンクへ分割するだけの処理ではない。事前に`scan`したEvidenceをUsage Intentに照らしてClaimへ変換し、根拠参照、適用時期、権威性、矛盾、情報不足を検証したうえで、RAGへ投入できるKnowledge Buildを作る。

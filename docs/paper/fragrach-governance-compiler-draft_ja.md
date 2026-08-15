@@ -1,20 +1,26 @@
-# Fragrach: RAGの前段で企業文書の効力を解決するガバナンス・コンパイラ
+<p align="center">
+  <img src="../../assets/fragrach-logo.png" alt="Fragrach — The Anserer" width="360">
+</p>
 
-*Fragrach: A Governance Compiler for Resolving Enterprise Document Validity before Retrieval-Augmented Generation*
+# Fragrach: Dependency-aware Living Corpus RAG
+
+**Dependency-aware Living Corpus RAG**
+
+*Fragrach: Dependency-aware Living Corpus RAG*
 
 著者: ［著者名］  
 所属: ［所属］  
-版: Draft 0.1（2026-08-06）
+版: Draft 0.3（2026-08-10）
 
-> 本稿は投稿前の技術叩き台である。評価方法は実装済みだが、主要な精度値は測定・監査中であり、本版では性能上の結論を置かない。
+> 本稿は投稿前の技術叩き台である。主要値は保存済みartifactから集計した最終評価値であるが、異なる企業文書構造への一般化は未確定である。
 
 ## 要旨
 
 企業内のRetrieval-Augmented Generation（RAG）では、質問に関連する文書を取得できても、その文書を回答根拠として採用すべきか決められないことがある。同じ検索領域に現行規程、旧版、未承認の草案、個別例外、FAQ、実施記録が共存すると、意味的な関連度だけでは、適用時点、権威、対象範囲、正本性、文書間の優先関係を表現できないためである。
 
-本稿では、この問題を検索順位の改善ではなく、文書の局所的な効力を解決する問題として定式化し、RAGの前段で企業文書を用途別のKnowledge Buildへ変換するFragrachを提案する。Fragrachは原文をEvidenceとして保持したまま、文書ごとのProfileと型付きRelationを抽出し、決定的なResolverによって候補文書を`canonical`、`instance_exception`、`execution_record`、`historical`、`reference`、`excluded`、`unresolved`へ分類する。解決結果は、採用根拠だけでなく、競合する根拠、Relation path、回答時の引用・開示条件、Provenanceを含むEvidence Packetとして既存RAGへ渡される。
+本稿では、内容と文書間関係が継続的に変化する文書集合をLiving Corpusと呼ぶ。この問題を検索順位の改善ではなく、文書の局所的な効力を解決する問題として定式化し、RAGの前段で企業文書を用途別のKnowledge Buildへ変換するFragrachを提案する。Fragrachは原文をEvidenceとして保持したまま、文書ごとのProfileと型付きRelationを抽出し、決定的なResolverによって候補文書を`canonical`、`instance_exception`、`execution_record`、`historical`、`reference`、`excluded`、`unresolved`へ分類する。解決結果は、採用根拠だけでなく、競合する根拠、Relation path、回答時の引用・開示条件、Provenanceを含むEvidence Packetとして既存RAGへ渡される。
 
-本方式の狙いは、あらゆる質問で検索精度を上げることではない。関連文書が複数取得された後に必要となる「どれが有効か」「例外はあるか」「規範と実績を混同していないか」「根拠不足なら停止すべきか」という判断を、生成モデルの暗黙推論から検証可能なコンパイル工程へ移すことにある。本稿では方式、設計根拠、評価契約を示し、最終的な有効性は凍結済みHoldoutと外部分布による評価後に報告する。
+本方式の狙いは、あらゆる質問で検索精度を上げることではない。関連文書が複数取得された後に必要となる「どれが有効か」「例外はあるか」「規範と実績を混同していないか」「根拠不足なら停止すべきか」という判断を、生成モデルの暗黙推論から検証可能な工程へ移すことにある。DVAAを計測した主結果であるEnterprise Fragrach 500の125問では、HybridからFragrach Soft Rerank v1へ替えると、Recall@20は両方97.07%、Accuracyは55.20%から56.00%、DVAAは0.6689から0.7281になった。別指標による参考結果として、未見100系列と複合表記揺れからなる実践holdout 200問では、同じRuri Denseを入口にしたRaw RAGに対し、Fragrach PacketはRecall@5を92.75%から97.50%へ、Accuracyを78.50%から98.50%へ、完全根拠付き正答率を0.00%から96.00%へ改善した。この二値値はAccuracyを合否条件に含むためDVAAとは呼ばない。したがって、文書効力を明示的に扱う効果は支持されるが、一般的な企業RAG全体への優位は確定していない。
 
 ## 1. はじめに
 
@@ -28,7 +34,7 @@ RAGは、生成モデルのパラメータに保持された知識と外部の�
 
 > 企業文書の採否と役割を、質問時の生成モデルへ暗黙に委ねず、原文へ遡れる決定的なKnowledge Compilationとして実行すると、完全根拠付き回答と安全な判断保留を改善できるか。
 
-本稿の貢献候補は三点である。第一に、企業文書RAGの失敗を、関連度不足ではなく文書効力の未解決として定式化する。第二に、原文Evidence、Document Profile、型付きRelation、決定的Resolver、Conflict gateを一つのKnowledge Buildへ統合する。第三に、通常のRecall@kと回答正解率に加え、必要な原文根拠がすべて回答資料へ残ったかを測るEvidence Unitと、完全根拠付き正答率を測るDVAAを評価契約として導入する。
+本稿の貢献候補は三点である。第一に、企業文書RAGの失敗を、関連度不足ではなく文書効力の未解決として定式化する。第二に、原文Evidence、Document Profile、型付きRelation、決定的Resolver、Conflict gateを一つのKnowledge Buildへ統合する。第三に、検索の到達を測るRecall、回答値を測るAccuracyに加え、必要主張を適用可能な根拠で支え、有害な根拠を避けたかを測るDVAAを評価契約として導入する。
 
 ## 2. 問題設定
 
@@ -70,7 +76,7 @@ R(c_q, D_q, P, E) \rightarrow \{(d_i, y_i, reason_i, path_i)\}
 
 ### 2.2 Evidence Unitを失わないこと
 
-Gold文書IDがtop-kへ入ることと、回答に必要な局所的根拠が最終Contextに残ることは同義ではない。長文の圧縮、chunk境界、重複候補、Relation展開によって、正しい文書を取得しても必要な一文が落ちる場合がある。本研究では、回答に必要な最小の原文spanとsourceの組をEvidence Unitと呼ぶ。ある質問に必要なUnitがすべて最終Packetへ入った場合だけ、その質問はEvidence Ceilingを満たす。
+Gold文書IDがtop-kへ入ることと、回答に必要な局所的根拠が最終Contextに残ることは同義ではない。長文の圧縮、chunk境界、重複候補、Relation展開によって、正しい文書を取得しても必要な一文が落ちる場合がある。本研究では、回答に必要な最小の原文spanとsourceの組をEvidence Unitと呼ぶ。DVAAではEvidence Unitを必要主張へ対応付け、実際に採用した適用可能な根拠の割合を主張の重みで採点する。
 
 ## 3. Fragrach
 
@@ -126,7 +132,7 @@ Resolverの出力は、単なる文書一覧ではなく、質問に必要なEvi
 
 これらは方式上の説明であり、性能上の証明ではない。単純で静的な文書集合ではFragrachの前処理費用が利益を上回り得る。また、候補Retrieverが必要文書を見つけられなければ、Resolverは新しい根拠を作れない。したがって評価では、強い通常RAGをBaselineにし、候補発見の改善とPacket構成の改善を分けて測る必要がある。
 
-## 5. 評価計画
+## 5. 評価
 
 ### 5.1 研究仮説
 
@@ -153,18 +159,37 @@ End-to-Endでは、少なくともRaw Hybrid、同用途へ絞った強いRaw Hy
 
 ### 5.3 指標
 
-| 層 | 主指標 | 測るもの |
-|---|---|---|
-| Compile | Profile / Relation extraction accuracy、Evidence grounding | 構造が原文に支えられているか |
-| Resolve | Strict case accuracy、Disposition accuracy、Relation path accuracy | 文書効力を正しく解いたか |
-| Guard | Abstention precision / recall、conflict disclosure | 解決不能時に止まれたか |
-| Retrieve | Document Recall@k、Evidence Unit Recall | 必要文書と局所根拠へ到達したか |
-| Assemble | Evidence Ceiling、Packet completeness | 必要Unitがすべて回答資料へ残ったか |
-| Answer | Answer accuracy、citation grounding、forbidden-error rate | 根拠を使って正しく答えたか |
-| End-to-End | DVAA-Gross、DVAA-Net | 完全根拠付きで正答した割合 |
-| Cost | compile時間、query latency、token、cache hit率、Packet長 | 改善に必要な費用 |
+| 指標 | 指標の説明 | 算出方法 | 数値の読み方 |
+|---|---|---|---|
+| Recall@\(k\) | 正答に必要な文書を、検索上位\(k\)件までにどれだけ取得できたかを測る | 各質問について、事前指定した正解根拠文書（Gold文書）のうち取得できた割合を求め、全質問で平均する | 高いほど必要文書の検索漏れが少ない。ただし、最終回答が正しいことは保証しない |
+| Accuracy | 最終回答の値または判断が、事前に定めた正解（Gold）と一致したかを測る | 各質問を正答なら1、誤答なら0とし、全質問に占める正答の割合を求める | 高いほど正答が多い。ただし、使った根拠が有効か、必要な根拠が揃ったかは分からない |
+| DVAA | 必要な主張を、質問に適用できる根拠でどれだけ支え、有害な根拠を避けたかを測る | 必要主張の加重カバレッジから有害文書の採用ペナルティを引き、全質問で平均する | −1から1。1は必要主張をすべて有効な根拠で支えた状態、0は加点も減点もない状態、負値は有害文書を根拠として採用した状態を表す |
 
-DVAA-Grossは、全回答可能質問のうち「正答かつ必要Evidence Unitが完備した」質問の割合とする。DVAA-Netは、Evidence Ceilingを満たした質問だけを分母にする。NetはPacketが作れた部分集合のReader性能であり、方式全体の成績ではないため、Gross、Evidence Ceiling、合格件数と必ず併記する。
+DVAA（Document Validity-Aware Adoption、文書効力考慮根拠採用スコア）では、質問 \(q\) の必要主張集合を \(C(q)\)、主張 \(c\) の重みを \(w_c\)、その主張を独立して裏付け、依存関係上も質問へ適用できる文書集合を \(A_c(q)\)、回答が根拠として採用した文書集合を \(D(q)\) とする。
+
+\[
+I_c(q)=
+\begin{cases}
+1 & A_c(q)\cap D(q)\neq\varnothing\\
+0 & \text{otherwise}
+\end{cases}
+\]
+
+\[
+P(q)=\frac{\sum_{c\in C(q)}w_c I_c(q)}{\sum_{c\in C(q)}w_c}
+\]
+
+有害文書集合を \(B(q)\)、文書 \(d\) のペナルティを \(h_d\) とすると、
+
+\[
+H(q)=\min\left(1,\sum_{d\in B(q)\cap D(q)}h_d\right)
+\]
+
+\[
+\operatorname{DVAA}(q)=P(q)-H(q),\qquad -1\leq\operatorname{DVAA}(q)\leq1
+\]
+
+同じ主張を独立して裏付け、文書間の依存関係が結論を変えない文書はOR条件とする。版、適用範囲、承認状態、置換、例外、競合などが結論を変える場合だけ、許容文書を質問へ適用できる文書へ限定する。AccuracyはDVAAの加点条件に含めない。
 
 ### 5.4 データ分割と報告規則
 
@@ -172,20 +197,47 @@ DVAA-Grossは、全回答可能質問のうち「正答かつ必要Evidence Unit
 
 外部分布では、複数記事の時間・比較・推論を含むMultiHop-RAGと、大規模な企業文書ノイズ、競合、制約、不在質問を含むEnterpriseRAG-Benchを用いる。外部データのGold回答、Gold文書ID、Gold factは検索、質問分解、Packet順位づけへ渡さない。
 
-### 5.5 結果欄（測定完了後に更新）
+### 5.5 DVAAを計測した主結果
 
-| 評価 | Baseline | Fragrach | 差 | 状態 |
-|---|---:|---:|---:|---|
-| 文書効力Holdout: Strict case | ［計測中］ | ［計測中］ | ［計測中］ | 未確定 |
-| 文書効力Holdout: Relation path | ［計測中］ | ［計測中］ | ［計測中］ | 未確定 |
-| Multi-hop: Evidence Ceiling | ［計測中］ | ［計測中］ | ［計測中］ | 未確定 |
-| Multi-hop: DVAA-Gross | ［計測中］ | ［計測中］ | ［計測中］ | 未確定 |
-| Enterprise: Evidence Ceiling | ［計測中］ | ［計測中］ | ［計測中］ | 未確定 |
-| Enterprise: DVAA-Gross | ［計測中］ | ［計測中］ | ［計測中］ | 未確定 |
-| 未解決競合: Abstention | ［計測中］ | ［計測中］ | ［計測中］ | 未確定 |
-| 質問当たりlatency / token | ［計測中］ | ［計測中］ | ［計測中］ | 未確定 |
+主結果には、私たちがEnterpriseRAG-Benchから選定した500文書サブセット、Enterprise Fragrach 500の125問を用いた。Qwen Hybrid top20と、同じ20文書をFragrach roleで並べ替えるSoft Rerank v1を比較した。回答器は`gpt-5.6-luna`、Accuracy judgeは`gpt-5.4`、DVAA契約は回答を見る前に`gpt-5.6-sol`で凍結した。
 
-主要結果では平均値だけでなく、質問型、Relation種別、文書数、旧版混入率、必要Evidence Unit数ごとの内訳と、改善・悪化した質問IDを報告する。精度差にはbootstrap信頼区間を付け、同一質問への方式間比較には対応のある検定を用いる予定である。
+| 条件 | Recall@20 | Accuracy | DVAA |
+|---|---:|---:|---:|
+| Hybrid | 97.07% | 55.20%（69/125） | 0.6689 |
+| Hybrid＋Fragrach Soft Rerank v1 | 97.07% | 56.00%（70/125） | 0.7281 |
+
+| 評価範囲 | 条件 | Recall@20 | Accuracy | DVAA |
+|---|---|---:|---:|---:|
+| 先行100問 | Hybrid | 97.33% | 52.00% | 0.6645 |
+| 先行100問 | Soft Rerank v1 | 97.33% | 54.00% | 0.7285 |
+| 事後追加25問 | Hybrid | 96.00% | 68.00% | 0.6867 |
+| 事後追加25問 | Soft Rerank v1 | 96.00% | 64.00% | 0.7267 |
+
+候補集合は同じためRecall@20は変わらない。125問総合ではSoft Rerank v1がAccuracyを+0.80ポイント、DVAAを+0.0592改善した。事後追加25問でもDVAAは+0.0400だった一方、Accuracyは−4.00ポイントだった。このAccuracy差は必要文書の順位が変わらない1問で生じており、回答生成の試行差を含む。
+
+125問値は、先行100問の結果を確認した後、検索前に生成済みだった未使用accepted候補25問を全件追加して得た質問数頑健性確認である。このため先行100問と事後追加25問を分けて報告する。DVAA契約はSol監査であり、人手監査済みのDVAA Fullではない。
+
+### 5.6 実践holdout 200問の参考結果
+
+別指標による参考評価には、既観測200系列とは別の100系列から作った`practical_holdout` 200問を用いた。質問には送り仮名、英字とカタカナ、大小文字と空白、業務同義語、略語、拠点番号、句読点、語順、疑問文形式の変換を複数重ねた。T1コーパスは1,988文書、検索面はRuri tokenizerによる512 token・overlap 64の34,875 chunkである。全条件でcandidate 1,000、top-k 5、Packet最大3件、Readerを`gpt-5.6-luna`、reasoning effort `low`へ固定した。
+
+| 条件 | Recall@5 | Accuracy | 完全根拠付き正答率 |
+|---|---:|---:|---:|
+| Raw BM25 | 1.50% | 2.00%（4/200） | 0.00%（0/200） |
+| Raw Ruri Dense | 92.75% | 78.50%（157/200） | 0.00%（0/200） |
+| Raw固定Hybrid | 87.25% | 78.50%（157/200） | 1.00%（2/200） |
+| Fragrach Ruri Packet | 97.50% | 98.50%（197/200） | 96.00%（192/200） |
+| Fragrach固定Hybrid Packet | 91.00% | 93.00%（186/200） | 90.00%（180/200） |
+
+完全根拠付き正答率は、正答、必要根拠の完備、根拠の時点・対象範囲・承認状態・発行主体・文書関係をすべて満たした質問の割合である。同じRuri Denseを入口にした対応あり比較では、Fragrach Packetの差はRecallで+4.75ポイント（95% CI 1.75–8.00）、Accuracyで+20.00ポイント（14.50–26.00）、完全根拠付き正答率で+96.00ポイント（93.00–98.50）だった。信頼区間は質問単位20,000回のpercentile bootstrapである。この二値値はAccuracyを合否条件に含むため、DVAAの値や比較対象には含めない。
+
+Raw Denseは回答値を157問で正解したが、有効かつ完全な根拠で支えた正答は0問だった。Fragrach Packetは197問で正答し、そのうち192問が完全根拠付き正答の条件を満たした。主な効果は単一の関連文書を見つけることより、現行版、例外、実施記録、台帳を一つの検証可能な回答資料として揃え、正答を有効な根拠へ結び付けたことにある。
+
+### 5.7 解釈上の境界
+
+外部分布のMultiHop-RAG、EnterpriseRAG-Bench diagnostic、VersionQAで計測済みの二値値は、Accuracyを合否条件に含む完全根拠付き正答率であり、DVAAへ読み替えない。現在のDVAAによる外部分布性能は未計測である。
+
+未知の企業文書構造、不完全または誤ったmetadata、同一purposeで13文書を超える実データ、実際の質問分布で重み付けしたProduction-weighted trackは未評価である。質問単位の3指標、信頼区間、入力hash、外部分布の区分は[最終評価レポート](../evaluations/final-metrics-2026-08-09_ja.md)と機械可読な`target/benchmarks/final-metrics-2026-08-09/report.json`へ保存した。Compile工程の診断値と運用費用は方式検証には使うが、最終精度表には混ぜない。
 
 ## 6. 関連研究との位置づけ
 
@@ -201,13 +253,15 @@ Evidence-first生成 [7] は、生成前に根拠を固定して事後的な引�
 
 第三に、Relation catalogは企業文書の代表的な関係へ意図的に限定しており、一般的なKnowledge Graphの表現力を持たない。第四に、現行の時間モデルは有効期間を中心とし、観測時点、発行時点、取引時点を完全には分離していない。第五に、用途ごとのKnowledge Buildは監査と再利用に向く一方、Source単位のLLM抽出を必要とし、初回コンパイル費用が生じる。
 
-最後に、構造化されたAnswer ContractがReader一般に効く場合、その改善をFragrach固有の効果として数えてはならない。評価では同じ回答契約をVanilla条件にも与え、文書効力の解決と一般的なPrompt改善を分離する。
+最後に、構造化されたAnswer ContractがReader一般に効く場合、その改善をFragrach固有の効果として数えてはならない。評価では同じ回答契約をVanilla条件にも与え、文書効力の解決と一般的なPrompt改善を分離する。また、現時点の結果は固定コーパスと固定モデルによる開発時評価であり、実運用での性能保証ではない。
 
 ## 8. 再現性
 
 現行プロトタイプはRust workspaceとして実装されている。Knowledge Buildには、入力Manifest、Usage Intent、Evidence、Claim、Profile、Relation、Conflict、Diagnostic、抽出Provider、モデル条件、Prompt指紋、Schema版、Artifact hashを保存する。抽出キャッシュは検証済みClaimではなくLLMの生応答を保持するため、Rust側の検証処理を変更した場合に再抽出せず再検証できる。
 
-論文用の再現パッケージでは、次を固定して公開する予定である。
+本稿の最終値は、実践holdout集計`target/benchmarks/final-metrics-2026-08-09/report.json`、Enterprise集計`tests/EnterpriseRAG-Fragrach-500/results/fragrach-rerank-fixed20-expanded-summary-v1/report.json`、DVAA正本`tests/EnterpriseRAG-Fragrach-500/DVAA_EVALUATION_ja.md`から再確認できる。実践holdoutの信頼区間は質問単位20,000回、seed 20260809のbootstrapで求めた。入力artifactのhashは各集計JSONの`inputs`に保存しており、回答、採点、Goldのいずれかを変更した場合は別runとして再生成する。
+
+論文用の公開再現パッケージでは、さらに次を固定する予定である。
 
 - コーパス版とsplitのhash
 - Usage IntentとResolution Context
@@ -222,7 +276,7 @@ Evidence-first生成 [7] は、生成前に根拠を固定して事後的な引�
 
 Fragrachは、企業文書RAGに残る「関連文書は見つかったが、どれを採用すべきか決められない」という問題を、文書効力のKnowledge Compilationとして扱う。原文をEvidenceとして保持し、Profileと型付きRelationを追加し、質問Contextに対して決定的なDispositionを返すことで、検索と生成の間に監査可能な判断境界を設ける。
 
-この設計が効果を持つ理由は、検索精度を無条件に上げるからではない。現行版、例外、実施記録、履歴、未解決競合を、それぞれ異なる責任を持つ回答資料へ変換し、必要根拠が揃う前の生成を防げるからである。性能上の主張は、凍結済みHoldout、強い同予算Baseline、外部分布評価が完了した後に確定する。
+この設計が効果を持つ理由は、検索精度を無条件に上げるからではない。現行版、例外、実施記録、履歴、未解決競合を、それぞれ異なる責任を持つ回答資料へ変換し、必要根拠が揃う前の生成を防げるからである。Enterprise Fragrach 500では同じ候補集合の並べ替えによりDVAAが改善し、別指標による実践holdoutでもRecall、Accuracy、完全根拠付き正答率が改善した。ただし、現在のDVAAによる外部分布性能とProduction-weightedな平均効果は今後の検証課題である。
 
 ## 参考文献
 

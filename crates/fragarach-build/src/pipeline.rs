@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,11 +17,18 @@ use fragarach_ir::{
 };
 use fragarach_llm::{
     CLAIM_EXTRACTION_CONTRACT_VERSION, ClaimExtractionRequest, ClaimExtractionResponse,
-    DOCUMENT_PROFILE_CONTRACT_VERSION, DocumentProfileExtractionRequest,
-    DocumentProfileExtractionResponse, KnowledgeExtractor, PromptEvidence,
-    claim_extraction_contract_fingerprint, document_profile_contract_fingerprint,
+    DOCUMENT_PROFILE_CONTRACT_VERSION, DOCUMENT_RELATION_CONTRACT_VERSION,
+    DocumentProfileExtractionRequest, DocumentProfileExtractionResponse, DocumentRelationCandidate,
+    DocumentRelationExtractionRequest, DocumentRelationExtractionResponse, KnowledgeExtractor,
+    PromptEvidence, SOURCE_PROFILE_CONTRACT_VERSION, claim_extraction_contract_fingerprint,
+    document_profile_contract_fingerprint, document_relation_contract_fingerprint,
+    source_profile_contract_fingerprint,
 };
-use fragarach_resolver::{normalize_document_set, validate_relations};
+use fragarach_resolver::{
+    CONTENDER_OFFSET, EXCLUDED_OFFSET, GOVERNING_OFFSET, STANDARD_RERANK_CANDIDATE_LIMIT,
+    STANDARD_RERANKER_NAME, UNCLASSIFIED_OFFSET, VERIFIER_OFFSET, normalize_document_set,
+    validate_relations,
+};
 use fragarach_workspace::WorkspaceLock;
 use globset::Glob;
 use serde::{Deserialize, Serialize};
@@ -32,6 +39,31 @@ use crate::{
     prompt_evidence_from_documents, validate_extraction,
 };
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum CompileStrategy {
+    GlobalV1,
+    LinearV2,
+    #[serde(rename = "dossier-v1", alias = "hybrid-v2")]
+    DossierV1,
+}
+
+impl CompileStrategy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::GlobalV1 => "global-v1",
+            Self::LinearV2 => "linear-v2",
+            Self::DossierV1 => "dossier-v1",
+        }
+    }
+}
+
+impl Default for CompileStrategy {
+    fn default() -> Self {
+        Self::DossierV1
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CompileOptions {
     pub workspace: PathBuf,
@@ -40,6 +72,7 @@ pub struct CompileOptions {
     pub batch_size: usize,
     pub llm_concurrency: usize,
     pub use_extraction_cache: bool,
+    pub strategy: CompileStrategy,
     pub conflict_context: ConflictContext,
     pub policy: CompilationPolicy,
 }
@@ -478,66 +511,34 @@ pub fn compile_workspace(
     }
     let provider = provider.context("provider returned no extraction response")?;
     let model = model.context("provider returned no extraction model")?;
-    let profile_request = DocumentProfileExtractionRequest {
-        evidence: compact_profile_evidence(&evidence),
-    };
-    let profile_cache_identity = if options.use_extraction_cache {
-        extractor.profile_cache_identity()?
-    } else {
-        None
-    };
-    let profile_cache_root = control.join("cache").join("document-profile-extraction-v1");
-    let profile_cache_path = profile_cache_identity
-        .as_deref()
-        .map(|identity| {
-            profile_extraction_cache_path(&profile_cache_root, identity, &profile_request)
-        })
-        .transpose()?;
-    let cached_profile_response = profile_cache_path
-        .as_deref()
-        .map(load_cached_profile_extraction)
-        .transpose()?
-        .flatten();
-    let mut profile_cache_hits = 0;
-    let mut profile_cache_misses = 0;
-    let mut profile_llm_calls = 0;
-    let mut profile_prompt_tokens = 0;
-    let mut profile_completion_tokens = 0;
-    let profile_response = if let Some(response) = cached_profile_response {
-        profile_cache_hits = 1;
-        response
-    } else {
-        let response = extractor.extract_profiles(&profile_request)?;
-        if response.provider != "metadata" {
-            profile_llm_calls = 1;
-            profile_prompt_tokens = response.usage.prompt_tokens;
-            profile_completion_tokens = response.usage.completion_tokens;
-        }
-        if let Some(cache_path) = &profile_cache_path {
-            save_cached_profile_extraction(
-                cache_path,
-                identity_for_cache(&profile_cache_identity),
-                &profile_request,
-                &response,
-            )?;
-            profile_cache_misses = 1;
-        }
-        response
-    };
-    if profile_response.provider != provider || profile_response.model != model {
+    let ProfileCompilation {
+        profiles: extracted_profiles,
+        relations: extracted_relations,
+        diagnostics: profile_diagnostics,
+        metrics: profile_metrics,
+        provider: profile_provider,
+        model: profile_model,
+    } = compile_document_profiles(
+        options.strategy,
+        extractor,
+        &control,
+        &evidence,
+        &claims,
+        options.use_extraction_cache,
+        options.llm_concurrency,
+    )?;
+    if profile_provider != provider || profile_model != model {
         bail!("profile extraction provider or model differs from Claim extraction");
     }
-    let metadata_only = profile_response.provider == "metadata";
-    let mut validated_profiles = validate_profile_extraction(profile_response, &evidence);
-    if metadata_only {
-        validated_profiles
-            .diagnostics
-            .retain(|item| item.code != "FRG-PRF-FALLBACK-PROFILE");
-    }
-    diagnostics.extend(validated_profiles.diagnostics);
+    let profile_cache_hits = profile_metrics.profile_cache_hits;
+    let profile_cache_misses = profile_metrics.profile_cache_misses;
+    let profile_llm_calls = profile_metrics.profile_llm_calls;
+    let profile_prompt_tokens = profile_metrics.profile_prompt_tokens;
+    let profile_completion_tokens = profile_metrics.profile_completion_tokens;
+    diagnostics.extend(profile_diagnostics);
     let normalized = normalize_document_set(
-        &validated_profiles.profiles,
-        &validated_profiles.relations,
+        &extracted_profiles,
+        &extracted_relations,
         &fragarach_ir::NormalizationCatalog::default(),
     );
     diagnostics.extend(
@@ -557,6 +558,10 @@ pub fn compile_workspace(
         &claims,
         &evidence,
     );
+    diagnostics.extend(unresolved_required_relation_diagnostics(
+        &document_relations,
+        &evidence,
+    ));
     diagnostics.extend(
         validate_relations(&document_profiles, &document_relations)
             .into_iter()
@@ -695,6 +700,11 @@ pub fn compile_workspace(
             "prompt_fingerprint": claim_extraction_contract_fingerprint(),
             "profile_contract": DOCUMENT_PROFILE_CONTRACT_VERSION,
             "profile_fingerprint": document_profile_contract_fingerprint(),
+            "source_profile_contract": SOURCE_PROFILE_CONTRACT_VERSION,
+            "source_profile_fingerprint": source_profile_contract_fingerprint(),
+            "relation_contract": DOCUMENT_RELATION_CONTRACT_VERSION,
+            "relation_fingerprint": document_relation_contract_fingerprint(),
+            "compile_strategy": options.strategy.as_str(),
             "intent_hash": format!("sha256:{}", sha256_hex(&fs::read(&options.intent_file)?)),
             "batch_size": options.batch_size,
             "llm_concurrency": options.llm_concurrency,
@@ -707,6 +717,11 @@ pub fn compile_workspace(
                 "enabled": options.use_extraction_cache,
                 "hits": profile_cache_hits,
                 "misses": profile_cache_misses
+            },
+            "relation_extraction_cache": {
+                "enabled": options.use_extraction_cache,
+                "hits": profile_metrics.relation_cache_hits,
+                "misses": profile_metrics.relation_cache_misses
             },
             "as_of": conflict_context.as_of,
             "authority_precedence": conflict_context.authority_precedence,
@@ -749,6 +764,7 @@ pub fn compile_workspace(
         generated_at: Utc::now(),
         status,
         intent_id: intent.id,
+        compile_strategy: options.strategy.as_str().to_owned(),
         source_manifest_hash: format!("sha256:{}", sha256_hex(&manifest_bytes)),
         provider,
         model,
@@ -769,6 +785,18 @@ pub fn compile_workspace(
             profile_llm_calls,
             profile_prompt_tokens,
             profile_completion_tokens,
+            profile_duration_ms: profile_metrics.profile_duration_ms,
+            profile_wall_duration_ms: profile_metrics.profile_wall_duration_ms,
+            profile_batches: profile_metrics.profile_batches,
+            relation_candidate_edges: profile_metrics.relation_candidate_edges,
+            relation_batches: profile_metrics.relation_batches,
+            relation_cache_hits: profile_metrics.relation_cache_hits,
+            relation_cache_misses: profile_metrics.relation_cache_misses,
+            relation_llm_calls: profile_metrics.relation_llm_calls,
+            relation_prompt_tokens: profile_metrics.relation_prompt_tokens,
+            relation_completion_tokens: profile_metrics.relation_completion_tokens,
+            relation_duration_ms: profile_metrics.relation_duration_ms,
+            relation_wall_duration_ms: profile_metrics.relation_wall_duration_ms,
             document_profiles: document_profiles.len(),
             document_relations: document_relations.len(),
             decision_packets: decision_packets.len(),
@@ -1070,6 +1098,7 @@ pub fn recompile_build(options: &RecompileOptions) -> Result<CompileResult> {
         generated_at: Utc::now(),
         status,
         intent_id: intent.id,
+        compile_strategy: old_manifest.compile_strategy,
         source_manifest_hash: old_manifest.source_manifest_hash,
         provider: old_manifest.provider,
         model: old_manifest.model,
@@ -1098,6 +1127,7 @@ pub fn recompile_build(options: &RecompileOptions) -> Result<CompileResult> {
             prompt_tokens: 0,
             completion_tokens: 0,
             duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            ..BuildMetrics::default()
         },
     };
     fs::write(
@@ -1268,6 +1298,42 @@ fn front_matter_value(text: &str, key: &str) -> Option<String> {
     None
 }
 
+fn front_matter_scope(text: &str) -> Option<ApplicabilityScope> {
+    let raw = front_matter_value(text, "scope")?;
+    let value = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
+    let object = value.as_object()?;
+    let values = |keys: &[&str]| {
+        let mut result = keys
+            .iter()
+            .filter_map(|key| object.get(*key))
+            .flat_map(|value| match value {
+                serde_json::Value::String(value) => vec![value.clone()],
+                serde_json::Value::Array(values) => values
+                    .iter()
+                    .filter_map(|value| value.as_str().map(str::to_owned))
+                    .collect(),
+                _ => Vec::new(),
+            })
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        result.sort();
+        result.dedup();
+        result
+    };
+    Some(ApplicabilityScope {
+        jurisdictions: values(&["jurisdiction", "jurisdictions"]),
+        entities: values(&["organization", "organizations", "entity", "entities"]),
+        sites: values(&["site", "sites"]),
+        products: values(&["product", "products"]),
+        assets: values(&["asset", "assets"]),
+        persons: values(&["person", "persons"]),
+        projects: values(&["project", "projects"]),
+        lots: values(&["lot", "lots"]),
+        contracts: values(&["contract", "contracts"]),
+    })
+}
+
 fn source_aware_batches(evidence: &[PromptEvidence], max_size: usize) -> Vec<Vec<PromptEvidence>> {
     let mut batches = Vec::new();
     let mut source_start = 0;
@@ -1407,7 +1473,7 @@ fn render_retrieval_profile(context: &ConflictContext) -> String {
         .map(|authority| format!("  - {authority}\n"))
         .collect::<String>();
     format!(
-        "schema_version: \"{IR_SCHEMA_VERSION}\"\nrequire_evidence: true\nfilters:\n  - intent_id\n  - as_of\nauthority_precedence:\n{precedence}authority_score_step: 0.05\n"
+        "schema_version: \"{IR_SCHEMA_VERSION}\"\nrequire_evidence: true\nfilters:\n  - intent_id\n  - as_of\nauthority_precedence:\n{precedence}authority_score_step: 0.05\nrerank:\n  algorithm: {STANDARD_RERANKER_NAME}\n  candidate_limit: {STANDARD_RERANK_CANDIDATE_LIMIT}\n  candidate_set: preserve\n  adjusted_rank: original_rank + role_offset\n  tie_breaker: original_rank\n  role_offsets:\n    governing: {GOVERNING_OFFSET}\n    verifier: {VERIFIER_OFFSET}\n    unclassified: {UNCLASSIFIED_OFFSET}\n    contender: {CONTENDER_OFFSET}\n    excluded: {EXCLUDED_OFFSET}\n"
     )
 }
 
@@ -1551,6 +1617,1045 @@ fn execute_claim_batches(
         .collect()
 }
 
+#[derive(Debug, Default)]
+struct ProfileCompilationMetrics {
+    profile_cache_hits: usize,
+    profile_cache_misses: usize,
+    profile_llm_calls: usize,
+    profile_prompt_tokens: u64,
+    profile_completion_tokens: u64,
+    profile_duration_ms: u64,
+    profile_wall_duration_ms: u64,
+    profile_batches: usize,
+    relation_candidate_edges: usize,
+    relation_batches: usize,
+    relation_cache_hits: usize,
+    relation_cache_misses: usize,
+    relation_llm_calls: usize,
+    relation_prompt_tokens: u64,
+    relation_completion_tokens: u64,
+    relation_duration_ms: u64,
+    relation_wall_duration_ms: u64,
+}
+
+#[derive(Debug)]
+struct ProfileCompilation {
+    profiles: Vec<DocumentProfile>,
+    relations: Vec<DocumentRelation>,
+    diagnostics: Vec<Diagnostic>,
+    metrics: ProfileCompilationMetrics,
+    provider: String,
+    model: String,
+}
+
+struct ProfileRequestPlan {
+    request: DocumentProfileExtractionRequest,
+    cache_path: Option<PathBuf>,
+    cached_response: Option<DocumentProfileExtractionResponse>,
+}
+
+struct ProfileRequestExecution {
+    request: DocumentProfileExtractionRequest,
+    response: DocumentProfileExtractionResponse,
+    cache_hit: bool,
+    cache_miss: bool,
+}
+
+fn execute_profile_requests(
+    extractor: &dyn KnowledgeExtractor,
+    requests: Vec<DocumentProfileExtractionRequest>,
+    cache_identity: Option<&str>,
+    cache_root: &Path,
+    concurrency: usize,
+    source_profiles_only: bool,
+) -> Result<Vec<ProfileRequestExecution>> {
+    let plans = requests
+        .into_iter()
+        .map(|request| {
+            let cache_path = cache_identity
+                .map(|identity| profile_extraction_cache_path(cache_root, identity, &request))
+                .transpose()?;
+            let cached_response = cache_path
+                .as_deref()
+                .map(load_cached_profile_extraction)
+                .transpose()?
+                .flatten();
+            Ok(ProfileRequestPlan {
+                request,
+                cache_path,
+                cached_response,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let missing = plans
+        .iter()
+        .enumerate()
+        .filter_map(|(index, plan)| plan.cached_response.is_none().then_some(index))
+        .collect::<Vec<_>>();
+    let results = Mutex::new(
+        (0..plans.len())
+            .map(|_| None::<Result<(DocumentProfileExtractionResponse, bool, bool)>>)
+            .collect::<Vec<_>>(),
+    );
+    {
+        let mut locked = results
+            .lock()
+            .map_err(|_| anyhow::anyhow!("profile extraction result lock was poisoned"))?;
+        for (index, plan) in plans.iter().enumerate() {
+            if let Some(response) = &plan.cached_response {
+                locked[index] = Some(Ok((response.clone(), true, false)));
+            }
+        }
+    }
+    if !missing.is_empty() {
+        let next = AtomicUsize::new(0);
+        let workers = concurrency.min(missing.len());
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                let results = &results;
+                let missing = &missing;
+                let plans = &plans;
+                let next = &next;
+                scope.spawn(move || {
+                    loop {
+                        let position = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(&index) = missing.get(position) else {
+                            break;
+                        };
+                        let plan = &plans[index];
+                        let outcome = (|| {
+                            let response = if source_profiles_only {
+                                extractor.extract_source_profiles(&plan.request)?
+                            } else {
+                                extractor.extract_profiles(&plan.request)?
+                            };
+                            let cache_miss = if let Some(path) = &plan.cache_path {
+                                save_cached_profile_extraction(
+                                    path,
+                                    cache_identity.unwrap_or_default(),
+                                    &plan.request,
+                                    &response,
+                                )?;
+                                true
+                            } else {
+                                false
+                            };
+                            Ok((response, false, cache_miss))
+                        })();
+                        let mut locked = results.lock().unwrap_or_else(|error| error.into_inner());
+                        locked[index] = Some(outcome);
+                    }
+                });
+            }
+        });
+    }
+    let outputs = results
+        .into_inner()
+        .map_err(|_| anyhow::anyhow!("profile extraction result lock was poisoned"))?;
+    plans
+        .into_iter()
+        .zip(outputs)
+        .map(|(plan, output)| {
+            let (response, cache_hit, cache_miss) =
+                output.context("profile extraction worker did not produce a result")??;
+            Ok(ProfileRequestExecution {
+                request: plan.request,
+                response,
+                cache_hit,
+                cache_miss,
+            })
+        })
+        .collect()
+}
+
+struct RelationRequestExecution {
+    response: DocumentRelationExtractionResponse,
+    cache_hit: bool,
+    cache_miss: bool,
+}
+
+fn execute_relation_requests(
+    extractor: &dyn KnowledgeExtractor,
+    requests: Vec<DocumentRelationExtractionRequest>,
+    cache_identity: Option<&str>,
+    cache_root: &Path,
+    concurrency: usize,
+) -> Result<Vec<RelationRequestExecution>> {
+    let plans = requests
+        .into_iter()
+        .map(|request| {
+            let cache_path = cache_identity
+                .map(|identity| relation_extraction_cache_path(cache_root, identity, &request))
+                .transpose()?;
+            let cached_response = cache_path
+                .as_deref()
+                .map(load_cached_relation_extraction)
+                .transpose()?
+                .flatten();
+            Ok((request, cache_path, cached_response))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let results = Mutex::new(
+        (0..plans.len())
+            .map(|_| None::<Result<(DocumentRelationExtractionResponse, bool, bool)>>)
+            .collect::<Vec<_>>(),
+    );
+    {
+        let mut locked = results
+            .lock()
+            .map_err(|_| anyhow::anyhow!("relation extraction result lock was poisoned"))?;
+        for (index, (_, _, cached)) in plans.iter().enumerate() {
+            if let Some(response) = cached {
+                locked[index] = Some(Ok((response.clone(), true, false)));
+            }
+        }
+    }
+    let missing = plans
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (_, _, cached))| cached.is_none().then_some(index))
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        let next = AtomicUsize::new(0);
+        let workers = concurrency.min(missing.len());
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                let results = &results;
+                let plans = &plans;
+                let missing = &missing;
+                let next = &next;
+                scope.spawn(move || {
+                    loop {
+                        let position = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(&index) = missing.get(position) else {
+                            break;
+                        };
+                        let (request, cache_path, _) = &plans[index];
+                        let outcome = (|| {
+                            let response = extractor.extract_relations(request)?;
+                            let cache_miss = if let Some(path) = cache_path {
+                                save_cached_relation_extraction(
+                                    path,
+                                    cache_identity.unwrap_or_default(),
+                                    request,
+                                    &response,
+                                )?;
+                                true
+                            } else {
+                                false
+                            };
+                            Ok((response, false, cache_miss))
+                        })();
+                        let mut locked = results.lock().unwrap_or_else(|error| error.into_inner());
+                        locked[index] = Some(outcome);
+                    }
+                });
+            }
+        });
+    }
+    results
+        .into_inner()
+        .map_err(|_| anyhow::anyhow!("relation extraction result lock was poisoned"))?
+        .into_iter()
+        .map(|output| {
+            let (response, cache_hit, cache_miss) =
+                output.context("relation extraction worker did not produce a result")??;
+            Ok(RelationRequestExecution {
+                response,
+                cache_hit,
+                cache_miss,
+            })
+        })
+        .collect()
+}
+
+fn compile_document_profiles(
+    strategy: CompileStrategy,
+    extractor: &dyn KnowledgeExtractor,
+    control: &Path,
+    evidence: &[PromptEvidence],
+    claims: &[Claim],
+    use_cache: bool,
+    concurrency: usize,
+) -> Result<ProfileCompilation> {
+    match strategy {
+        CompileStrategy::GlobalV1 => {
+            compile_document_profiles_global(extractor, control, evidence, use_cache)
+        }
+        CompileStrategy::LinearV2 => compile_document_profiles_linear(
+            extractor,
+            control,
+            evidence,
+            claims,
+            use_cache,
+            concurrency,
+            RelationPlanning::FixedEdges,
+        ),
+        CompileStrategy::DossierV1 => compile_document_profiles_linear(
+            extractor,
+            control,
+            evidence,
+            claims,
+            use_cache,
+            concurrency,
+            RelationPlanning::Dossiers,
+        ),
+    }
+}
+
+fn compile_document_profiles_global(
+    extractor: &dyn KnowledgeExtractor,
+    control: &Path,
+    evidence: &[PromptEvidence],
+    use_cache: bool,
+) -> Result<ProfileCompilation> {
+    let cache_identity = if use_cache {
+        extractor.profile_cache_identity()?
+    } else {
+        None
+    };
+    let wall_started = std::time::Instant::now();
+    let executions = execute_profile_requests(
+        extractor,
+        vec![DocumentProfileExtractionRequest {
+            evidence: compact_profile_evidence(evidence),
+        }],
+        cache_identity.as_deref(),
+        &control.join("cache").join("document-profile-extraction-v1"),
+        1,
+        false,
+    )?;
+    let execution = executions
+        .into_iter()
+        .next()
+        .context("global profile extraction produced no response")?;
+    let mut metrics = ProfileCompilationMetrics {
+        profile_cache_hits: usize::from(execution.cache_hit),
+        profile_cache_misses: usize::from(execution.cache_miss),
+        profile_batches: 1,
+        profile_wall_duration_ms: u64::try_from(wall_started.elapsed().as_millis())
+            .unwrap_or(u64::MAX),
+        ..ProfileCompilationMetrics::default()
+    };
+    if !execution.cache_hit && execution.response.provider != "metadata" {
+        metrics.profile_llm_calls = 1;
+        metrics.profile_prompt_tokens = execution.response.usage.prompt_tokens;
+        metrics.profile_completion_tokens = execution.response.usage.completion_tokens;
+        metrics.profile_duration_ms = execution.response.usage.duration_ms;
+    }
+    let provider = execution.response.provider.clone();
+    let model = execution.response.model.clone();
+    let metadata_only = provider == "metadata";
+    let mut validated = validate_profile_extraction(execution.response, evidence);
+    if metadata_only {
+        validated
+            .diagnostics
+            .retain(|item| item.code != "FRG-PRF-FALLBACK-PROFILE");
+    }
+    Ok(ProfileCompilation {
+        profiles: validated.profiles,
+        relations: validated.relations,
+        diagnostics: validated.diagnostics,
+        metrics,
+        provider,
+        model,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RelationPlanning {
+    FixedEdges,
+    Dossiers,
+}
+
+impl RelationPlanning {
+    fn cache_namespace(self) -> &'static str {
+        match self {
+            Self::FixedEdges => "document-profile-extraction-linear-v2",
+            // Preserve the pre-rename namespace so dossier-v1 can reuse valid hybrid-v2 caches.
+            Self::Dossiers => "document-profile-extraction-hybrid-v2",
+        }
+    }
+}
+
+fn compile_document_profiles_linear(
+    extractor: &dyn KnowledgeExtractor,
+    control: &Path,
+    evidence: &[PromptEvidence],
+    claims: &[Claim],
+    use_cache: bool,
+    concurrency: usize,
+    relation_planning: RelationPlanning,
+) -> Result<ProfileCompilation> {
+    let compact = compact_profile_evidence(evidence);
+    let mut by_source = BTreeMap::<String, Vec<PromptEvidence>>::new();
+    for item in &compact {
+        by_source
+            .entry(item.source_id.clone())
+            .or_default()
+            .push(item.clone());
+    }
+    let profile_requests = by_source
+        .into_values()
+        .map(|evidence| DocumentProfileExtractionRequest { evidence })
+        .collect::<Vec<_>>();
+    let cache_identity = if use_cache {
+        extractor.source_profile_cache_identity()?
+    } else {
+        None
+    };
+    let profile_wall_started = std::time::Instant::now();
+    let profile_executions = execute_profile_requests(
+        extractor,
+        profile_requests,
+        cache_identity.as_deref(),
+        &control
+            .join("cache")
+            .join("document-profile-extraction-linear-v2")
+            .join("profile"),
+        concurrency,
+        true,
+    )?;
+    let mut metrics = ProfileCompilationMetrics {
+        profile_batches: profile_executions.len(),
+        profile_wall_duration_ms: u64::try_from(profile_wall_started.elapsed().as_millis())
+            .unwrap_or(u64::MAX),
+        ..ProfileCompilationMetrics::default()
+    };
+    let mut provider = None;
+    let mut model = None;
+    let mut profiles = Vec::new();
+    let mut diagnostics = Vec::new();
+    for execution in profile_executions {
+        ensure_profile_provider(&mut provider, &mut model, &execution.response)?;
+        metrics.profile_cache_hits += usize::from(execution.cache_hit);
+        metrics.profile_cache_misses += usize::from(execution.cache_miss);
+        if !execution.cache_hit && execution.response.provider != "metadata" {
+            metrics.profile_llm_calls += 1;
+            metrics.profile_prompt_tokens += execution.response.usage.prompt_tokens;
+            metrics.profile_completion_tokens += execution.response.usage.completion_tokens;
+            metrics.profile_duration_ms += execution.response.usage.duration_ms;
+        }
+        let metadata_only = execution.response.provider == "metadata";
+        let mut validated =
+            validate_profile_extraction(execution.response, &execution.request.evidence);
+        if metadata_only {
+            validated
+                .diagnostics
+                .retain(|item| item.code != "FRG-PRF-FALLBACK-PROFILE");
+        }
+        profiles.extend(validated.profiles);
+        diagnostics.extend(validated.diagnostics);
+    }
+    let provider = provider.context("linear profile extraction produced no provider")?;
+    let model = model.context("linear profile extraction produced no model")?;
+
+    let preliminary = normalize_document_set(
+        &profiles,
+        &[],
+        &fragarach_ir::NormalizationCatalog::default(),
+    );
+    let mut candidate_profiles = preliminary.profiles;
+    apply_front_matter_to_profiles(&mut candidate_profiles, evidence);
+    let mut deterministic_relations = Vec::new();
+    let mut deterministic_additions = Vec::new();
+    complete_required_relation_slots(
+        &mut deterministic_relations,
+        &mut deterministic_additions,
+        &candidate_profiles,
+        evidence,
+    );
+    deterministic_relations.extend(deterministic_additions);
+    let (required_dossiers, required_fallback_pairs) =
+        required_relation_fallback_pairs(evidence, &deterministic_relations);
+    let mut candidates = relation_candidates(&candidate_profiles, claims, evidence)
+        .into_iter()
+        .filter(
+            |(left, right)| match (required_dossiers.get(left), required_dossiers.get(right)) {
+                (None, None) => true,
+                (Some(left_dossier), Some(right_dossier)) if left_dossier == right_dossier => {
+                    required_fallback_pairs.contains(&canonical_relation_pair(left, right))
+                }
+                _ => false,
+            },
+        )
+        .collect::<Vec<_>>();
+    candidates.extend(required_fallback_pairs);
+    candidates.sort();
+    candidates.dedup();
+    if provider == "metadata" {
+        metrics.relation_candidate_edges = candidates.len();
+        return Ok(ProfileCompilation {
+            profiles,
+            relations: deterministic_relations,
+            diagnostics,
+            metrics,
+            provider,
+            model,
+        });
+    }
+
+    let relation_plans = match relation_planning {
+        RelationPlanning::FixedEdges => relation_request_batches(&candidates, &compact, 8),
+        RelationPlanning::Dossiers => relation_request_dossiers(&candidates, &compact),
+    };
+    metrics.relation_candidate_edges = relation_plans
+        .iter()
+        .flat_map(|plan| plan.allowed_pairs.iter())
+        .collect::<HashSet<_>>()
+        .len();
+    if relation_plans.is_empty() {
+        return Ok(ProfileCompilation {
+            profiles,
+            relations: deterministic_relations,
+            diagnostics,
+            metrics,
+            provider,
+            model,
+        });
+    }
+    metrics.relation_batches = relation_plans.len();
+    let relation_requests = relation_plans
+        .iter()
+        .map(|plan| plan.request.clone())
+        .collect::<Vec<_>>();
+    let relation_wall_started = std::time::Instant::now();
+    let relation_cache_identity = if use_cache {
+        extractor.relation_cache_identity()?
+    } else {
+        None
+    };
+    let relation_executions = execute_relation_requests(
+        extractor,
+        relation_requests,
+        relation_cache_identity.as_deref(),
+        &control
+            .join("cache")
+            .join(relation_planning.cache_namespace())
+            .join("relation"),
+        concurrency,
+    )?;
+    metrics.relation_wall_duration_ms =
+        u64::try_from(relation_wall_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let mut seen_relations = deterministic_relations
+        .iter()
+        .map(|relation| relation.id.clone())
+        .collect::<HashSet<_>>();
+    let mut relations = deterministic_relations;
+    for (execution, plan) in relation_executions.into_iter().zip(relation_plans) {
+        if execution.response.provider != provider || execution.response.model != model {
+            bail!("relation extraction provider or model differs from Profile extraction");
+        }
+        metrics.relation_cache_hits += usize::from(execution.cache_hit);
+        metrics.relation_cache_misses += usize::from(execution.cache_miss);
+        if !execution.cache_hit {
+            metrics.relation_llm_calls += 1;
+            metrics.relation_prompt_tokens += execution.response.usage.prompt_tokens;
+            metrics.relation_completion_tokens += execution.response.usage.completion_tokens;
+            metrics.relation_duration_ms += execution.response.usage.duration_ms;
+        }
+        let validated = validate_candidate_relations(
+            execution.response.relations,
+            &candidate_profiles,
+            evidence,
+            &plan.allowed_pairs,
+        );
+        diagnostics.extend(validated.diagnostics);
+        relations.extend(
+            validated
+                .relations
+                .into_iter()
+                .filter(|relation| seen_relations.insert(relation.id.clone())),
+        );
+    }
+    Ok(ProfileCompilation {
+        profiles,
+        relations,
+        diagnostics,
+        metrics,
+        provider,
+        model,
+    })
+}
+
+fn ensure_profile_provider(
+    provider: &mut Option<String>,
+    model: &mut Option<String>,
+    response: &DocumentProfileExtractionResponse,
+) -> Result<()> {
+    if provider
+        .as_ref()
+        .is_some_and(|value| value != &response.provider)
+        || model.as_ref().is_some_and(|value| value != &response.model)
+    {
+        bail!("profile extraction provider or model changed during one compilation");
+    }
+    provider.get_or_insert_with(|| response.provider.clone());
+    model.get_or_insert_with(|| response.model.clone());
+    Ok(())
+}
+
+const MAX_RELATION_CANDIDATES_PER_SOURCE: usize = 32;
+const MAX_RELATION_POSTING: usize = 64;
+const MAX_RELATION_LEXICAL_KEYS_PER_SOURCE: usize = 64;
+const RELATION_LEXICAL_SHINGLE_CHARS: usize = 8;
+
+type RelationPair = (String, String);
+
+fn canonical_relation_pair(left: &str, right: &str) -> RelationPair {
+    if left <= right {
+        (left.to_owned(), right.to_owned())
+    } else {
+        (right.to_owned(), left.to_owned())
+    }
+}
+
+fn relation_candidates(
+    profiles: &[DocumentProfile],
+    claims: &[Claim],
+    evidence: &[PromptEvidence],
+) -> Vec<RelationPair> {
+    let known = profiles
+        .iter()
+        .map(|profile| profile.source_id.clone())
+        .collect::<HashSet<_>>();
+    let mut postings = HashMap::<String, Vec<String>>::new();
+    for profile in profiles {
+        if let Some(document_id) = profile.document_id.as_deref() {
+            postings
+                .entry(format!("document:{document_id}"))
+                .or_default()
+                .push(profile.source_id.clone());
+        }
+        for (dimension, values) in profile_scope_values(&profile.scope) {
+            for value in values {
+                postings
+                    .entry(format!("scope:{dimension}:{value}"))
+                    .or_default()
+                    .push(profile.source_id.clone());
+            }
+        }
+    }
+    for claim in claims {
+        let sources = claim
+            .evidence
+            .iter()
+            .map(|reference| reference.source_id.clone())
+            .collect::<HashSet<_>>();
+        for source_id in sources {
+            if known.contains(&source_id) {
+                postings
+                    .entry(format!("claim:{}:{}", claim.subject, claim.predicate))
+                    .or_default()
+                    .push(source_id);
+            }
+        }
+    }
+    add_relation_evidence_postings(&mut postings, evidence, &known);
+    let mut scores = HashMap::<String, HashMap<String, u32>>::new();
+    for (key, mut sources) in postings {
+        sources.sort();
+        sources.dedup();
+        if sources.len() < 2 || sources.len() > MAX_RELATION_POSTING {
+            continue;
+        }
+        let weight = if key.starts_with("document:") {
+            100
+        } else if key.starts_with("claim:") {
+            40
+        } else if key.starts_with("quote:") {
+            60
+        } else if key.starts_with("lexical:") {
+            20
+        } else {
+            10
+        };
+        for (index, left) in sources.iter().enumerate() {
+            for right in &sources[index + 1..] {
+                add_relation_candidate_score(&mut scores, left, right, weight);
+                add_relation_candidate_score(&mut scores, right, left, weight);
+            }
+        }
+    }
+
+    let by_document_id = profiles
+        .iter()
+        .filter_map(|profile| {
+            profile
+                .document_id
+                .as_ref()
+                .map(|document_id| (document_id.clone(), profile.source_id.clone()))
+        })
+        .fold(HashMap::<String, Vec<String>>::new(), |mut index, item| {
+            index.entry(item.0).or_default().push(item.1);
+            index
+        });
+    for item in evidence
+        .iter()
+        .filter(|item| item.text.trim_start().starts_with("---"))
+    {
+        let Some(target_id) = front_matter_value(&item.text, "position_target_document_id") else {
+            continue;
+        };
+        for target in by_document_id.get(&target_id).into_iter().flatten() {
+            if target != &item.source_id {
+                add_relation_candidate_score(&mut scores, &item.source_id, target, 1_000);
+            }
+        }
+    }
+
+    let mut edges = HashSet::new();
+    let mut source_ids = scores.keys().cloned().collect::<Vec<_>>();
+    source_ids.sort();
+    for source_id in source_ids {
+        let mut candidates = scores
+            .remove(&source_id)
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+        for (candidate, _) in candidates
+            .into_iter()
+            .take(MAX_RELATION_CANDIDATES_PER_SOURCE)
+        {
+            if source_id != candidate {
+                edges.insert(canonical_relation_pair(&source_id, &candidate));
+            }
+        }
+    }
+    let mut edges = edges.into_iter().collect::<Vec<_>>();
+    edges.sort();
+    edges
+}
+
+fn add_relation_evidence_postings(
+    postings: &mut HashMap<String, Vec<String>>,
+    evidence: &[PromptEvidence],
+    known: &HashSet<String>,
+) {
+    let mut keys_by_source = HashMap::<&str, HashSet<String>>::new();
+    for item in evidence {
+        if !known.contains(&item.source_id) {
+            continue;
+        }
+        let keys = keys_by_source.entry(item.source_id.as_str()).or_default();
+        if keys.len() >= MAX_RELATION_LEXICAL_KEYS_PER_SOURCE {
+            continue;
+        }
+        for phrase in quoted_phrases(&item.text) {
+            if keys.len() >= MAX_RELATION_LEXICAL_KEYS_PER_SOURCE {
+                break;
+            }
+            keys.insert(format!("quote:{phrase}"));
+        }
+        if keys.len() >= MAX_RELATION_LEXICAL_KEYS_PER_SOURCE {
+            continue;
+        }
+        let normalized = item
+            .text
+            .chars()
+            .filter(|character| character.is_alphanumeric())
+            .collect::<Vec<_>>();
+        for window in normalized.windows(RELATION_LEXICAL_SHINGLE_CHARS) {
+            if keys.len() >= MAX_RELATION_LEXICAL_KEYS_PER_SOURCE {
+                break;
+            }
+            keys.insert(format!("lexical:{}", window.iter().collect::<String>()));
+        }
+    }
+    for (source_id, keys) in keys_by_source {
+        for key in keys {
+            postings.entry(key).or_default().push(source_id.to_owned());
+        }
+    }
+}
+
+fn add_relation_candidate_score(
+    scores: &mut HashMap<String, HashMap<String, u32>>,
+    source: &str,
+    candidate: &str,
+    weight: u32,
+) {
+    let candidates = scores.entry(source.to_owned()).or_default();
+    if candidates.len() >= MAX_RELATION_CANDIDATES_PER_SOURCE * 4
+        && !candidates.contains_key(candidate)
+    {
+        return;
+    }
+    *candidates.entry(candidate.to_owned()).or_default() += weight;
+}
+
+fn profile_scope_values(scope: &ApplicabilityScope) -> [(&'static str, &[String]); 9] {
+    [
+        ("jurisdiction", &scope.jurisdictions),
+        ("entity", &scope.entities),
+        ("site", &scope.sites),
+        ("product", &scope.products),
+        ("asset", &scope.assets),
+        ("person", &scope.persons),
+        ("project", &scope.projects),
+        ("lot", &scope.lots),
+        ("contract", &scope.contracts),
+    ]
+}
+
+#[derive(Debug)]
+struct RelationRequestPlan {
+    request: DocumentRelationExtractionRequest,
+    allowed_pairs: HashSet<RelationPair>,
+}
+
+fn relation_request_batches(
+    candidates: &[RelationPair],
+    compact_evidence: &[PromptEvidence],
+    edges_per_batch: usize,
+) -> Vec<RelationRequestPlan> {
+    let evidence_by_source = relation_evidence_by_source(compact_evidence);
+    candidates
+        .chunks(edges_per_batch)
+        .map(|edges| relation_request_plan(edges, &evidence_by_source))
+        .collect()
+}
+
+const MAX_HYBRID_DOSSIER_DOCUMENTS: usize = 12;
+const MAX_HYBRID_DOSSIER_EDGES: usize = 32;
+
+fn relation_request_dossiers(
+    candidates: &[RelationPair],
+    compact_evidence: &[PromptEvidence],
+) -> Vec<RelationRequestPlan> {
+    let evidence_by_source = relation_evidence_by_source(compact_evidence);
+    let mut by_dossier = BTreeMap::<String, Vec<String>>::new();
+    let mut dossier_by_source = HashMap::<String, String>::new();
+    for (source_id, items) in &evidence_by_source {
+        let dossier = relation_dossier_key(source_id, items);
+        by_dossier
+            .entry(dossier.clone())
+            .or_default()
+            .push(source_id.clone());
+        dossier_by_source.insert(source_id.clone(), dossier);
+    }
+
+    let grouped_sources = by_dossier
+        .values()
+        .filter(|sources| sources.len() >= 2)
+        .flatten()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let mut internal_by_dossier = BTreeMap::<String, Vec<RelationPair>>::new();
+    let mut fallback = Vec::new();
+    for edge in candidates {
+        let left_dossier = dossier_by_source.get(&edge.0);
+        let right_dossier = dossier_by_source.get(&edge.1);
+        if left_dossier == right_dossier {
+            if let Some(dossier) = left_dossier {
+                internal_by_dossier
+                    .entry(dossier.clone())
+                    .or_default()
+                    .push(edge.clone());
+            }
+        } else if !grouped_sources.contains(&edge.0) || !grouped_sources.contains(&edge.1) {
+            fallback.push(edge.clone());
+        }
+    }
+
+    let mut plans = Vec::new();
+    for (dossier, mut sources) in by_dossier {
+        sources.sort();
+        sources.dedup();
+        if sources.len() < 2 {
+            continue;
+        }
+        if sources.len() <= MAX_HYBRID_DOSSIER_DOCUMENTS {
+            let mut edges = Vec::with_capacity(sources.len() * (sources.len() - 1) / 2);
+            for (index, left) in sources.iter().enumerate() {
+                for right in &sources[index + 1..] {
+                    edges.push(canonical_relation_pair(left, right));
+                }
+            }
+            plans.push(relation_request_plan(&edges, &evidence_by_source));
+            continue;
+        }
+        let internal = internal_by_dossier.remove(&dossier).unwrap_or_default();
+        plans.extend(
+            bounded_relation_edge_batches(&internal)
+                .into_iter()
+                .map(|edges| relation_request_plan(&edges, &evidence_by_source)),
+        );
+    }
+
+    plans.extend(
+        bounded_relation_edge_batches(&fallback)
+            .into_iter()
+            .map(|edges| relation_request_plan(&edges, &evidence_by_source)),
+    );
+    plans
+}
+
+fn bounded_relation_edge_batches(candidates: &[RelationPair]) -> Vec<Vec<RelationPair>> {
+    let mut batches = Vec::new();
+    let mut current = Vec::new();
+    let mut sources = HashSet::<String>::new();
+    for edge in candidates {
+        let additional_sources = [&edge.0, &edge.1]
+            .into_iter()
+            .filter(|source| !sources.contains(*source))
+            .count();
+        if !current.is_empty()
+            && (current.len() >= MAX_HYBRID_DOSSIER_EDGES
+                || sources.len() + additional_sources > MAX_HYBRID_DOSSIER_DOCUMENTS)
+        {
+            batches.push(std::mem::take(&mut current));
+            sources.clear();
+        }
+        sources.insert(edge.0.clone());
+        sources.insert(edge.1.clone());
+        current.push(edge.clone());
+    }
+    if !current.is_empty() {
+        batches.push(current);
+    }
+    batches
+}
+
+fn relation_evidence_by_source(
+    compact_evidence: &[PromptEvidence],
+) -> BTreeMap<String, Vec<PromptEvidence>> {
+    let mut by_source = BTreeMap::<String, Vec<PromptEvidence>>::new();
+    for item in compact_evidence {
+        by_source
+            .entry(item.source_id.clone())
+            .or_default()
+            .push(item.clone());
+    }
+    for items in by_source.values_mut() {
+        items.sort_by_key(|item| std::cmp::Reverse(profile_evidence_score(item)));
+        items.truncate(DOSSIER_EVIDENCE_PER_ENDPOINT);
+    }
+    by_source
+}
+
+fn relation_dossier_key(source_id: &str, evidence: &[PromptEvidence]) -> String {
+    if let Some(metadata) = evidence
+        .iter()
+        .find(|item| item.text.trim_start().starts_with("---"))
+    {
+        if let Some(scenario) = front_matter_value(&metadata.text, "scenario") {
+            return front_matter_value(&metadata.text, "purpose")
+                .map(|purpose| format!("scenario:{scenario}:purpose:{purpose}"))
+                .unwrap_or_else(|| format!("scenario:{scenario}"));
+        }
+    }
+    evidence
+        .first()
+        .and_then(|item| Path::new(&item.source_path).parent())
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(|parent| format!("path:{}", parent.to_string_lossy().replace('\\', "/")))
+        .unwrap_or_else(|| format!("source:{source_id}"))
+}
+
+fn relation_request_plan(
+    edges: &[RelationPair],
+    evidence_by_source: &BTreeMap<String, Vec<PromptEvidence>>,
+) -> RelationRequestPlan {
+    let source_ids = edges
+        .iter()
+        .flat_map(|(left, right)| [left.as_str(), right.as_str()])
+        .collect::<HashSet<_>>();
+    let selected = evidence_by_source
+        .iter()
+        .filter(|(source_id, _)| source_ids.contains(source_id.as_str()))
+        .flat_map(|(_, items)| items.iter().cloned())
+        .collect();
+    RelationRequestPlan {
+        request: DocumentRelationExtractionRequest {
+            evidence: selected,
+            candidates: edges
+                .iter()
+                .map(|(source_id, target_id)| DocumentRelationCandidate {
+                    source_id: source_id.clone(),
+                    target_id: target_id.clone(),
+                })
+                .collect(),
+        },
+        allowed_pairs: edges.iter().cloned().collect(),
+    }
+}
+
+struct ValidatedRelations {
+    relations: Vec<DocumentRelation>,
+    diagnostics: Vec<Diagnostic>,
+}
+
+fn validate_candidate_relations(
+    relations: Vec<DocumentRelation>,
+    profiles: &[DocumentProfile],
+    evidence: &[PromptEvidence],
+    allowed_pairs: &HashSet<RelationPair>,
+) -> ValidatedRelations {
+    let profile_ids = profiles
+        .iter()
+        .map(|profile| profile.source_id.as_str())
+        .collect::<HashSet<_>>();
+    let known_evidence = evidence
+        .iter()
+        .map(|item| (item.source_id.as_str(), item.evidence_id.as_str()))
+        .collect::<HashSet<_>>();
+    let mut diagnostics = Vec::new();
+    let mut seen = HashSet::new();
+    let endpoint_index = RelationEndpointIndex::new(profiles);
+    let relations = relations
+        .into_iter()
+        .map(|mut relation| {
+            endpoint_index.normalize_relation(&mut relation);
+            relation
+        })
+        .filter(|relation| {
+            if !allowed_pairs.contains(&canonical_relation_pair(
+                &relation.source_id,
+                &relation.target_id,
+            )) {
+                return false;
+            }
+            let endpoints = relation.source_id != relation.target_id
+                && profile_ids.contains(relation.source_id.as_str())
+                && profile_ids.contains(relation.target_id.as_str());
+            let unique = !relation.id.trim().is_empty() && seen.insert(relation.id.clone());
+            let grounded = !relation.evidence.is_empty()
+                && relation.evidence.iter().all(|reference| {
+                    known_evidence.contains(&(
+                        reference.source_id.as_str(),
+                        reference.evidence_id.as_str(),
+                    ))
+                });
+            let clauses = relation.kind != fragarach_ir::RelationKind::Amends
+                || (!relation.source_clauses.is_empty() && !relation.target_clauses.is_empty());
+            if endpoints && unique && grounded && clauses {
+                true
+            } else {
+                diagnostics.push(profile_extraction_diagnostic(
+                    "FRG-PRF-INVALID-RELATION",
+                    &relation.id,
+                    "Document Relationを根拠検証で棄却しました",
+                    format!(
+                        "valid_endpoints={endpoints}; unique={unique}; grounded={grounded}; clauses={clauses}"
+                    ),
+                    relation
+                        .evidence
+                        .iter()
+                        .map(|item| item.evidence_id.clone())
+                        .collect(),
+                ));
+                false
+            }
+        })
+        .collect();
+    ValidatedRelations {
+        relations,
+        diagnostics,
+    }
+}
+
 #[derive(Debug)]
 struct ValidatedProfileExtraction {
     profiles: Vec<DocumentProfile>,
@@ -1646,11 +2751,12 @@ fn validate_profile_extraction(
         .map(|profile| profile.source_id.as_str())
         .collect::<HashSet<_>>();
     let mut seen_relations = HashSet::new();
+    let endpoint_index = RelationEndpointIndex::new(&profiles);
     let relations = response
         .relations
         .into_iter()
         .map(|mut relation| {
-            normalize_relation_endpoints(&mut relation, &profiles);
+            endpoint_index.normalize_relation(&mut relation);
             relation
         })
         .filter(|relation| {
@@ -1690,25 +2796,52 @@ fn validate_profile_extraction(
     }
 }
 
+#[cfg(test)]
 fn normalize_relation_endpoints(relation: &mut DocumentRelation, profiles: &[DocumentProfile]) {
-    relation.source_id = normalize_relation_endpoint(&relation.source_id, profiles);
-    relation.target_id = normalize_relation_endpoint(&relation.target_id, profiles);
+    RelationEndpointIndex::new(profiles).normalize_relation(relation);
 }
 
-fn normalize_relation_endpoint(endpoint: &str, profiles: &[DocumentProfile]) -> String {
-    if profiles.iter().any(|profile| profile.source_id == endpoint) {
-        return endpoint.to_owned();
+struct RelationEndpointIndex<'a> {
+    sources: HashSet<&'a str>,
+    document_ids: HashMap<&'a str, Option<&'a str>>,
+}
+
+impl<'a> RelationEndpointIndex<'a> {
+    fn new(profiles: &'a [DocumentProfile]) -> Self {
+        let sources = profiles
+            .iter()
+            .map(|profile| profile.source_id.as_str())
+            .collect();
+        let mut document_ids = HashMap::new();
+        for profile in profiles {
+            if let Some(document_id) = profile.document_id.as_deref() {
+                document_ids
+                    .entry(document_id)
+                    .and_modify(|source| *source = None)
+                    .or_insert(Some(profile.source_id.as_str()));
+            }
+        }
+        Self {
+            sources,
+            document_ids,
+        }
     }
-    let mut matches = profiles
-        .iter()
-        .filter(|profile| profile.document_id.as_deref() == Some(endpoint));
-    let Some(profile) = matches.next() else {
-        return endpoint.to_owned();
-    };
-    if matches.next().is_some() {
-        return endpoint.to_owned();
+
+    fn normalize_relation(&self, relation: &mut DocumentRelation) {
+        relation.source_id = self.normalize_endpoint(&relation.source_id);
+        relation.target_id = self.normalize_endpoint(&relation.target_id);
     }
-    profile.source_id.clone()
+
+    fn normalize_endpoint(&self, endpoint: &str) -> String {
+        if self.sources.contains(endpoint) {
+            return endpoint.to_owned();
+        }
+        self.document_ids
+            .get(endpoint)
+            .and_then(|source| *source)
+            .unwrap_or(endpoint)
+            .to_owned()
+    }
 }
 
 fn fallback_document_profile(
@@ -1748,7 +2881,7 @@ fn fallback_document_profile(
                 .as_deref()
                 .is_some_and(|value| matches!(value, "current" | "approved")),
         },
-        scope: ApplicabilityScope::default(),
+        scope: front_matter_scope(&metadata.text).unwrap_or_default(),
         time: TemporalProfile {
             valid_from: front_matter_value(&metadata.text, "valid_from")
                 .or_else(|| front_matter_value(&metadata.text, "effective_from")),
@@ -1831,6 +2964,9 @@ fn apply_front_matter_to_profiles(profiles: &mut [DocumentProfile], evidence: &[
         profile.time.valid_to = front_matter_value(&item.text, "valid_to")
             .or_else(|| front_matter_value(&item.text, "effective_to"))
             .or_else(|| profile.time.valid_to.clone());
+        if let Some(scope) = front_matter_scope(&item.text) {
+            profile.scope = scope;
+        }
         if let Some(value) =
             front_matter_value(&item.text, "approved").and_then(|value| value.parse::<bool>().ok())
         {
@@ -1869,6 +3005,22 @@ fn merge_front_matter_positions(
         .filter(|item| item.text.trim_start().starts_with("---"))
         .map(|item| (item.source_id.as_str(), item))
         .collect::<std::collections::HashMap<_, _>>();
+    let mut profiles_by_document_id = HashMap::<&str, Vec<&DocumentProfile>>::new();
+    for profile in profiles {
+        if let Some(document_id) = profile.document_id.as_deref() {
+            let entries = profiles_by_document_id.entry(document_id).or_default();
+            if entries.len() <= MAX_RELATION_POSTING {
+                entries.push(profile);
+            }
+        }
+    }
+    let mut evidence_by_source = HashMap::<&str, Vec<&PromptEvidence>>::new();
+    for item in evidence {
+        evidence_by_source
+            .entry(item.source_id.as_str())
+            .or_default()
+            .push(item);
+    }
     let mut compiled = Vec::new();
     let mut managed_pairs = HashSet::new();
     let mut managed_sources = HashSet::new();
@@ -1894,13 +3046,18 @@ fn merge_front_matter_positions(
             continue;
         };
         let target_revision = front_matter_value(&item.text, "position_target_revision");
-        let Some(target) = profiles.iter().find(|candidate| {
-            candidate.source_id != source.source_id
-                && candidate.document_id.as_deref() == Some(target_document_id.as_str())
-                && target_revision
-                    .as_ref()
-                    .is_none_or(|revision| candidate.revision.as_deref() == Some(revision.as_str()))
-        }) else {
+        let Some(target) = profiles_by_document_id
+            .get(target_document_id.as_str())
+            .filter(|candidates| candidates.len() <= MAX_RELATION_POSTING)
+            .into_iter()
+            .flatten()
+            .find(|candidate| {
+                candidate.source_id != source.source_id
+                    && target_revision.as_ref().is_none_or(|revision| {
+                        candidate.revision.as_deref() == Some(revision.as_str())
+                    })
+            })
+        else {
             continue;
         };
 
@@ -1912,12 +3069,14 @@ fn merge_front_matter_positions(
             references.push(reference.clone());
         }
         if let Some(verifier_document_id) = front_matter_value(&item.text, "position_verified_by")
-            && let Some(verifier) = profiles.iter().find(|candidate| {
-                candidate.document_id.as_deref() == Some(verifier_document_id.as_str())
-            })
-            && let Some(verifier_evidence) = evidence
-                .iter()
-                .filter(|candidate| candidate.source_id == verifier.source_id)
+            && let Some(verifier) = profiles_by_document_id
+                .get(verifier_document_id.as_str())
+                .filter(|candidates| candidates.len() == 1)
+                .and_then(|candidates| candidates.first())
+            && let Some(verifier_evidence) = evidence_by_source
+                .get(verifier.source_id.as_str())
+                .into_iter()
+                .flatten()
                 .max_by_key(|candidate| {
                     usize::from(
                         candidate
@@ -1979,22 +3138,21 @@ fn refine_stale_guidance_relations(
     profiles: &[DocumentProfile],
     claims: &[Claim],
 ) {
+    let profile_by_id = profiles
+        .iter()
+        .map(|profile| (profile.source_id.as_str(), profile))
+        .collect::<HashMap<_, _>>();
+    let claims_by_source = index_claims_by_source(claims);
     for relation in relations {
         if relation.kind != fragarach_ir::RelationKind::OperationalPosition
             || relation.position != fragarach_ir::DocumentPosition::NonEffective
         {
             continue;
         }
-        let Some(source) = profiles
-            .iter()
-            .find(|profile| profile.source_id == relation.source_id)
-        else {
+        let Some(source) = profile_by_id.get(relation.source_id.as_str()) else {
             continue;
         };
-        let Some(target) = profiles
-            .iter()
-            .find(|profile| profile.source_id == relation.target_id)
-        else {
+        let Some(target) = profile_by_id.get(relation.target_id.as_str()) else {
             continue;
         };
         if source.role != DocumentRole::Communication
@@ -2003,34 +3161,121 @@ fn refine_stale_guidance_relations(
         {
             continue;
         }
-        let source_claims = claims.iter().filter(|claim| {
-            claim
-                .evidence
-                .iter()
-                .any(|reference| reference.source_id == source.source_id)
-        });
-        let target_claims = claims
-            .iter()
-            .filter(|claim| {
-                claim
-                    .evidence
-                    .iter()
-                    .any(|reference| reference.source_id == target.source_id)
-            })
-            .collect::<Vec<_>>();
-        let has_incompatible_value = source_claims.into_iter().any(|left| {
-            crate::predicate_is_single_valued(&left.predicate)
-                && target_claims.iter().any(|right| {
-                    left.predicate
-                        .trim()
-                        .eq_ignore_ascii_case(right.predicate.trim())
-                        && left.object != right.object
-                        && relation_subjects_overlap(&left.subject, &right.subject)
-                })
-        });
-        if has_incompatible_value {
+        if incompatible_claim_evidence_scored(
+            &source.source_id,
+            &target.source_id,
+            &claims_by_source,
+        )
+        .is_some()
+        {
             relation.kind = fragarach_ir::RelationKind::ConflictsWith;
         }
+    }
+}
+
+const MAX_RELATION_CLAIMS_PER_SOURCE: usize = 64;
+const MAX_RELATION_MATCH_EVIDENCE_PER_SOURCE: usize = 16;
+
+struct RelationCoverageIndex<'a> {
+    profiles: HashMap<&'a str, &'a DocumentProfile>,
+    evidence: HashMap<&'a str, Vec<&'a PromptEvidence>>,
+    claims: HashMap<&'a str, Vec<&'a Claim>>,
+    document_types: HashMap<&'a str, String>,
+    candidates: HashMap<String, Vec<String>>,
+}
+
+impl<'a> RelationCoverageIndex<'a> {
+    fn new(
+        profiles: &'a [DocumentProfile],
+        claims: &'a [Claim],
+        evidence: &'a [PromptEvidence],
+        relations: &[DocumentRelation],
+    ) -> Self {
+        let profiles_by_id = profiles
+            .iter()
+            .map(|profile| (profile.source_id.as_str(), profile))
+            .collect::<HashMap<_, _>>();
+        let mut evidence_by_source = HashMap::<&str, Vec<&PromptEvidence>>::new();
+        let mut document_types = HashMap::new();
+        for item in evidence {
+            evidence_by_source
+                .entry(item.source_id.as_str())
+                .or_default()
+                .push(item);
+            if item.text.trim_start().starts_with("---")
+                && let Some(document_type) = front_matter_value(&item.text, "document_type")
+            {
+                document_types.insert(item.source_id.as_str(), document_type);
+            }
+        }
+        let claims_by_source = index_claims_by_source(claims);
+        let mut candidates = HashMap::<String, Vec<String>>::new();
+        for (left, right) in
+            relation_candidates(profiles, claims, evidence)
+                .into_iter()
+                .chain(relations.iter().map(|relation| {
+                    canonical_relation_pair(&relation.source_id, &relation.target_id)
+                }))
+        {
+            add_coverage_candidate(&mut candidates, &left, &right);
+            add_coverage_candidate(&mut candidates, &right, &left);
+        }
+        Self {
+            profiles: profiles_by_id,
+            evidence: evidence_by_source,
+            claims: claims_by_source,
+            document_types,
+            candidates,
+        }
+    }
+
+    fn candidate_profiles(&self, source_id: &str) -> Vec<&'a DocumentProfile> {
+        self.candidates
+            .get(source_id)
+            .into_iter()
+            .flatten()
+            .filter_map(|target| self.profiles.get(target.as_str()).copied())
+            .collect()
+    }
+
+    fn source_evidence(&self, source_id: &str) -> &[&'a PromptEvidence] {
+        self.evidence
+            .get(source_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+}
+
+fn index_claims_by_source(claims: &[Claim]) -> HashMap<&str, Vec<&Claim>> {
+    let mut claims_by_source = HashMap::<&str, Vec<&Claim>>::new();
+    for claim in claims {
+        let mut sources = claim
+            .evidence
+            .iter()
+            .map(|reference| reference.source_id.as_str())
+            .collect::<Vec<_>>();
+        sources.sort_unstable();
+        sources.dedup();
+        for source in sources {
+            let entries = claims_by_source.entry(source).or_default();
+            if entries.len() < MAX_RELATION_CLAIMS_PER_SOURCE {
+                entries.push(claim);
+            }
+        }
+    }
+    claims_by_source
+}
+
+fn add_coverage_candidate(
+    candidates: &mut HashMap<String, Vec<String>>,
+    source: &str,
+    target: &str,
+) {
+    let targets = candidates.entry(source.to_owned()).or_default();
+    if targets.len() < MAX_RELATION_CANDIDATES_PER_SOURCE + MAX_HYBRID_DOSSIER_DOCUMENTS
+        && !targets.iter().any(|item| item == target)
+    {
+        targets.push(target.to_owned());
     }
 }
 
@@ -2040,42 +3285,37 @@ fn complete_relation_family_coverage(
     claims: &[Claim],
     evidence: &[PromptEvidence],
 ) {
-    let profile_by_id = profiles
-        .iter()
-        .map(|profile| (profile.source_id.as_str(), profile))
-        .collect::<std::collections::HashMap<_, _>>();
-    let document_types = evidence
-        .iter()
-        .filter(|item| item.text.trim_start().starts_with("---"))
-        .filter_map(|item| {
-            front_matter_value(&item.text, "document_type")
-                .map(|document_type| (item.source_id.as_str(), document_type))
-        })
-        .collect::<std::collections::HashMap<_, _>>();
+    let index = RelationCoverageIndex::new(profiles, claims, evidence, relations);
+    let profile_by_id = &index.profiles;
+    let document_types = &index.document_types;
 
-    let amendment_pairs = relations
-        .iter()
-        .filter(|relation| relation.kind == fragarach_ir::RelationKind::Amends)
-        .filter(|relation| {
-            document_types
+    let mut amendments_by_pair = HashMap::<(String, String), Vec<DocumentRelation>>::new();
+    for relation in relations.iter().filter(|relation| {
+        relation.kind == fragarach_ir::RelationKind::Amends
+            && document_types
                 .get(relation.source_id.as_str())
                 .is_some_and(|document_type| document_type == "specification_amendment")
-                && profile_by_id
-                    .get(relation.source_id.as_str())
-                    .is_some_and(|profile| profile.force.approved)
-                && profile_by_id
-                    .get(relation.target_id.as_str())
-                    .is_some_and(|profile| profile.force.approved)
-        })
-        .cloned()
-        .collect::<Vec<_>>();
+            && profile_by_id
+                .get(relation.source_id.as_str())
+                .is_some_and(|profile| profile.force.approved)
+            && profile_by_id
+                .get(relation.target_id.as_str())
+                .is_some_and(|profile| profile.force.approved)
+    }) {
+        amendments_by_pair
+            .entry((relation.source_id.clone(), relation.target_id.clone()))
+            .or_default()
+            .push(relation.clone());
+    }
     relations.retain(|relation| {
         relation.kind != fragarach_ir::RelationKind::ConflictsWith
-            || !amendment_pairs.iter().any(|amendment| {
-                amendment.source_id == relation.source_id
-                    && amendment.target_id == relation.target_id
-                    && relation_clauses_overlap(amendment, relation)
-            })
+            || amendments_by_pair
+                .get(&(relation.source_id.clone(), relation.target_id.clone()))
+                .is_none_or(|amendments| {
+                    !amendments
+                        .iter()
+                        .any(|amendment| relation_clauses_overlap(amendment, relation))
+                })
     });
 
     let mut additions = Vec::new();
@@ -2093,27 +3333,28 @@ fn complete_relation_family_coverage(
         {
             continue;
         }
-        let Some(proposal_evidence) = evidence.iter().find(|item| {
-            item.source_id == source.source_id
-                && item.text.contains("契約変更")
-                && item.text.contains("署名")
-        }) else {
+        let Some(proposal_evidence) = index
+            .source_evidence(&source.source_id)
+            .iter()
+            .copied()
+            .find(|item| item.text.contains("契約変更") && item.text.contains("署名"))
+        else {
             continue;
         };
-        let proposal_value_evidence = evidence
+        let proposal_value_evidence = index
+            .source_evidence(&source.source_id)
             .iter()
+            .copied()
             .filter(|item| {
-                item.source_id == source.source_id
-                    && item
-                        .heading_path
-                        .last()
-                        .is_some_and(|heading| heading.contains("提案"))
+                item.heading_path
+                    .last()
+                    .is_some_and(|heading| heading.contains("提案"))
                     && !item.text.trim_start().starts_with('#')
                     && (item.text.contains("提示") || item.text.contains("提案"))
                     && !item.text.contains("この節では")
             })
             .min_by_key(|item| item.text.chars().count());
-        for target in profiles {
+        for target in index.candidate_profiles(&source.source_id) {
             if target.source_id == source.source_id
                 || document_types
                     .get(target.source_id.as_str())
@@ -2180,8 +3421,9 @@ fn complete_relation_family_coverage(
             && profile.role == DocumentRole::Instruction
             && profile.force.approved
     }) {
-        let candidates = profiles
-            .iter()
+        let candidates = index
+            .candidate_profiles(&source.source_id)
+            .into_iter()
             .filter(|target| {
                 document_types
                     .get(target.source_id.as_str())
@@ -2191,7 +3433,7 @@ fn complete_relation_family_coverage(
                     && scope_is_strict_refinement(&source.scope, &target.scope)
             })
             .filter_map(|target| {
-                corroborating_claim_evidence(&source.source_id, &target.source_id, claims)
+                corroborating_claim_evidence(&source.source_id, &target.source_id, &index.claims)
                     .map(|references| (target, references))
             })
             .collect::<Vec<_>>();
@@ -2229,8 +3471,9 @@ fn complete_relation_family_coverage(
             && profile.role == DocumentRole::Instruction
             && profile.force.approved
     }) {
-        let candidates = profiles
-            .iter()
+        let candidates = index
+            .candidate_profiles(&source.source_id)
+            .into_iter()
             .filter(|target| {
                 document_types
                     .get(target.source_id.as_str())
@@ -2240,8 +3483,12 @@ fn complete_relation_family_coverage(
                     && scope_is_strict_refinement(&source.scope, &target.scope)
             })
             .filter_map(|target| {
-                incompatible_claim_evidence_scored(&source.source_id, &target.source_id, claims)
-                    .map(|(_, references)| (target, references))
+                incompatible_claim_evidence_scored(
+                    &source.source_id,
+                    &target.source_id,
+                    &index.claims,
+                )
+                .map(|(_, references)| (target, references))
             })
             .collect::<Vec<_>>();
         let [(target, references)] = candidates.as_slice() else {
@@ -2330,8 +3577,9 @@ fn complete_relation_family_coverage(
             && profile.role == DocumentRole::Record
             && profile.official_record == Some(true)
     }) {
-        let candidates = profiles
-            .iter()
+        let candidates = index
+            .candidate_profiles(&source.source_id)
+            .into_iter()
             .filter(|target| {
                 document_types
                     .get(target.source_id.as_str())
@@ -2341,7 +3589,7 @@ fn complete_relation_family_coverage(
                     && scopes_equivalent(&source.scope, &target.scope)
             })
             .filter_map(|target| {
-                corroborating_claim_evidence(&source.source_id, &target.source_id, claims)
+                corroborating_claim_evidence(&source.source_id, &target.source_id, &index.claims)
                     .map(|references| (target, references))
             })
             .collect::<Vec<_>>();
@@ -2420,20 +3668,28 @@ fn complete_relation_family_coverage(
         });
     }
 
-    let mut corrected_stale_targets = Vec::new();
+    let mut corrected_stale_targets = HashMap::<String, String>::new();
+    let mut conflict_pairs = relations
+        .iter()
+        .filter(|relation| relation.kind == fragarach_ir::RelationKind::ConflictsWith)
+        .map(|relation| (relation.source_id.clone(), relation.target_id.clone()))
+        .collect::<HashSet<_>>();
     for source in profiles.iter().filter(|profile| {
         document_types
             .get(profile.source_id.as_str())
             .is_some_and(|document_type| document_type == "faq")
             && profile.role == DocumentRole::Communication
-            && evidence.iter().any(|item| {
-                item.source_id == profile.source_id
-                    && (item.text.contains("反映していない")
-                        || item.text.to_lowercase().contains("stale"))
-            })
+            && index
+                .source_evidence(&profile.source_id)
+                .iter()
+                .any(|item| {
+                    item.text.contains("反映していない")
+                        || item.text.to_lowercase().contains("stale")
+                })
     }) {
-        let candidates = profiles
-            .iter()
+        let candidates = index
+            .candidate_profiles(&source.source_id)
+            .into_iter()
             .filter(|target| {
                 target.source_id != source.source_id
                     && target.role == DocumentRole::Normative
@@ -2441,8 +3697,12 @@ fn complete_relation_family_coverage(
                     && scopes_equivalent(&source.scope, &target.scope)
             })
             .filter_map(|target| {
-                incompatible_claim_evidence_scored(&source.source_id, &target.source_id, claims)
-                    .map(|(score, references)| (target, references, score))
+                incompatible_claim_evidence_scored(
+                    &source.source_id,
+                    &target.source_id,
+                    &index.claims,
+                )
+                .map(|(score, references)| (target, references, score))
             })
             .collect::<Vec<_>>();
         let Some(best_score) = candidates.iter().map(|(_, _, score)| *score).max() else {
@@ -2456,12 +3716,8 @@ fn complete_relation_family_coverage(
             continue;
         };
         let (target, references, _) = *best;
-        corrected_stale_targets.push((source.source_id.clone(), target.source_id.clone()));
-        if !relations.iter().chain(&additions).any(|relation| {
-            relation.kind == fragarach_ir::RelationKind::ConflictsWith
-                && relation.source_id == source.source_id
-                && relation.target_id == target.source_id
-        }) {
+        corrected_stale_targets.insert(source.source_id.clone(), target.source_id.clone());
+        if conflict_pairs.insert((source.source_id.clone(), target.source_id.clone())) {
             let key = format!("{}:{}:conflicts_with", source.source_id, target.source_id);
             additions.push(DocumentRelation {
                 id: format!("coverage_{}", &sha256_hex(key.as_bytes())[..16]),
@@ -2481,9 +3737,8 @@ fn complete_relation_family_coverage(
     relations.retain(|relation| {
         relation.kind != fragarach_ir::RelationKind::ConflictsWith
             || corrected_stale_targets
-                .iter()
-                .find(|(source_id, _)| source_id == &relation.source_id)
-                .is_none_or(|(_, target_id)| target_id == &relation.target_id)
+                .get(&relation.source_id)
+                .is_none_or(|target_id| target_id == &relation.target_id)
     });
 
     for source in profiles.iter().filter(|profile| {
@@ -2493,8 +3748,9 @@ fn complete_relation_family_coverage(
             && profile.role == DocumentRole::Record
             && profile.official_record == Some(true)
     }) {
-        let candidates = profiles
-            .iter()
+        let candidates = index
+            .candidate_profiles(&source.source_id)
+            .into_iter()
             .filter(|target| {
                 document_types
                     .get(target.source_id.as_str())
@@ -2504,18 +3760,14 @@ fn complete_relation_family_coverage(
                     && scopes_equivalent(&source.scope, &target.scope)
             })
             .filter_map(|target| {
-                corroborating_claim_evidence(&source.source_id, &target.source_id, claims)
+                corroborating_claim_evidence(&source.source_id, &target.source_id, &index.claims)
                     .map(|references| (target, references))
             })
             .collect::<Vec<_>>();
         let [(target, references)] = candidates.as_slice() else {
             continue;
         };
-        if relations.iter().chain(&additions).any(|relation| {
-            relation.kind == fragarach_ir::RelationKind::RecordsExecutionOf
-                && relation.source_id == source.source_id
-                && relation.target_id == target.source_id
-        }) {
+        if !execution_pairs.insert((source.source_id.clone(), target.source_id.clone())) {
             continue;
         }
         let key = format!(
@@ -2544,13 +3796,15 @@ fn complete_relation_family_coverage(
             && profile.role == DocumentRole::Proposal
             && !profile.force.approved
     }) {
-        let Some((topic_evidence, topic)) =
-            proposed_technical_change_topic(&source.source_id, evidence)
-        else {
+        let Some((topic_evidence, topic)) = proposed_technical_change_topic(
+            &source.source_id,
+            index.source_evidence(&source.source_id),
+        ) else {
             continue;
         };
-        let candidates = profiles
-            .iter()
+        let candidates = index
+            .candidate_profiles(&source.source_id)
+            .into_iter()
             .filter(|target| {
                 document_types
                     .get(target.source_id.as_str())
@@ -2559,9 +3813,11 @@ fn complete_relation_family_coverage(
                     && target.force.approved
             })
             .filter_map(|target| {
-                evidence
+                index
+                    .source_evidence(&target.source_id)
                     .iter()
-                    .filter(|item| item.source_id == target.source_id && item.text.contains(&topic))
+                    .copied()
+                    .filter(|item| item.text.contains(&topic))
                     .min_by_key(|item| item.text.chars().count())
                     .map(|target_evidence| (target, target_evidence))
             })
@@ -2569,18 +3825,18 @@ fn complete_relation_family_coverage(
         let [(target, target_evidence)] = candidates.as_slice() else {
             continue;
         };
-        if relations.iter().chain(&additions).any(|relation| {
-            relation.kind == fragarach_ir::RelationKind::ProposesChangeTo
-                && relation.source_id == source.source_id
-                && relation.target_id == target.source_id
-        }) {
+        if !proposal_pairs.insert((source.source_id.clone(), target.source_id.clone())) {
             continue;
         }
-        let Some(status_evidence) = evidence.iter().find(|item| {
-            item.source_id == source.source_id
-                && item.text.contains("未承認")
-                && (item.text.contains("適用") || item.text.contains("正式"))
-        }) else {
+        let Some(status_evidence) = index
+            .source_evidence(&source.source_id)
+            .iter()
+            .copied()
+            .find(|item| {
+                item.text.contains("未承認")
+                    && (item.text.contains("適用") || item.text.contains("正式"))
+            })
+        else {
             continue;
         };
         let key = format!(
@@ -2620,6 +3876,16 @@ fn complete_relation_family_coverage(
         });
     }
 
+    let mut decision_relation_keys = relations
+        .iter()
+        .map(|relation| {
+            (
+                relation.source_id.clone(),
+                relation.target_id.clone(),
+                relation_kind_name(&relation.kind),
+            )
+        })
+        .collect::<HashSet<_>>();
     for decision in profiles.iter().filter(|profile| {
         document_types
             .get(profile.source_id.as_str())
@@ -2628,8 +3894,9 @@ fn complete_relation_family_coverage(
             && profile.force.approved
             && profile.official_record == Some(true)
     }) {
-        let candidates = profiles
-            .iter()
+        let candidates = index
+            .candidate_profiles(&decision.source_id)
+            .into_iter()
             .filter(|plan| {
                 document_types
                     .get(plan.source_id.as_str())
@@ -2638,8 +3905,11 @@ fn complete_relation_family_coverage(
                     && plan.force.approved
             })
             .filter_map(|plan| {
-                matching_decision_plan_evidence(&decision.source_id, &plan.source_id, evidence)
-                    .map(|references| (plan, references))
+                matching_decision_plan_evidence(
+                    index.source_evidence(&decision.source_id),
+                    index.source_evidence(&plan.source_id),
+                )
+                .map(|references| (plan, references))
             })
             .collect::<Vec<_>>();
         let [(plan, references)] = candidates.as_slice() else {
@@ -2657,17 +3927,17 @@ fn complete_relation_family_coverage(
                 &decision.source_id,
             ),
         ] {
-            if relations.iter().chain(&additions).any(|relation| {
-                relation.kind == kind
-                    && relation.source_id == *source_id
-                    && relation.target_id == *target_id
-            }) {
-                continue;
-            }
             let kind_name = serde_json::to_value(&kind)
                 .ok()
                 .and_then(|value| value.as_str().map(str::to_owned))
                 .unwrap_or_else(|| "decision_relation".to_owned());
+            if !decision_relation_keys.insert((
+                source_id.to_string(),
+                target_id.to_string(),
+                kind_name.clone(),
+            )) {
+                continue;
+            }
             let key = format!("{source_id}:{target_id}:{kind_name}");
             additions.push(DocumentRelation {
                 id: format!("coverage_{}", &sha256_hex(key.as_bytes())[..16]),
@@ -2685,14 +3955,1053 @@ fn complete_relation_family_coverage(
         }
     }
 
+    complete_incident_change_relations(relations, &mut additions, profiles, evidence);
+    complete_required_relation_slots(relations, &mut additions, profiles, evidence);
+
     relations.extend(additions);
     relations.sort_by(|left, right| left.id.cmp(&right.id));
+}
+
+struct RequiredRelationSlot {
+    purpose: &'static str,
+    source_types: &'static [&'static str],
+    source_status: Option<&'static str>,
+    target_types: &'static [&'static str],
+    target_status: Option<&'static str>,
+    kind: fragarach_ir::RelationKind,
+    position: fragarach_ir::DocumentPosition,
+    source_headings: &'static [&'static str],
+    target_headings: &'static [&'static str],
+}
+
+const REQUIRED_RELATION_SLOTS: &[RequiredRelationSlot] = &[
+    RequiredRelationSlot {
+        purpose: "technical_spec",
+        source_types: &["specification_amendment"],
+        source_status: None,
+        target_types: &["technical_specification"],
+        target_status: None,
+        kind: fragarach_ir::RelationKind::Amends,
+        position: fragarach_ir::DocumentPosition::Dominates,
+        source_headings: &["対象条項", "変更値"],
+        target_headings: &["変更管理", "基準値"],
+    },
+    RequiredRelationSlot {
+        purpose: "technical_spec",
+        source_types: &["test_record"],
+        source_status: None,
+        target_types: &["specification_amendment"],
+        target_status: None,
+        kind: fragarach_ir::RelationKind::RecordsExecutionOf,
+        position: fragarach_ir::DocumentPosition::NonEffective,
+        source_headings: &["試験対象", "判定", "記録性"],
+        target_headings: &["対象条項", "変更値"],
+    },
+    RequiredRelationSlot {
+        purpose: "technical_spec",
+        source_types: &["technical_draft"],
+        source_status: None,
+        target_types: &["technical_specification"],
+        target_status: None,
+        kind: fragarach_ir::RelationKind::ProposesChangeTo,
+        position: fragarach_ir::DocumentPosition::NonEffective,
+        source_headings: &["検討目的", "候補値"],
+        target_headings: &["変更管理", "基準値"],
+    },
+    RequiredRelationSlot {
+        purpose: "operations",
+        source_types: &["work_instruction"],
+        source_status: None,
+        target_types: &["operating_procedure"],
+        target_status: None,
+        kind: fragarach_ir::RelationKind::AppliesTo,
+        position: fragarach_ir::DocumentPosition::Conditional,
+        source_headings: &["上位手順", "実施"],
+        target_headings: &["対象", "頻度"],
+    },
+    RequiredRelationSlot {
+        purpose: "operations",
+        source_types: &["temporary_deviation"],
+        source_status: None,
+        target_types: &["operating_procedure"],
+        target_status: None,
+        kind: fragarach_ir::RelationKind::ExceptionTo,
+        position: fragarach_ir::DocumentPosition::Conditional,
+        source_headings: &["適用対象", "例外規則"],
+        target_headings: &["例外", "対象"],
+    },
+    RequiredRelationSlot {
+        purpose: "operations",
+        source_types: &["execution_log"],
+        source_status: None,
+        target_types: &["temporary_deviation"],
+        target_status: None,
+        kind: fragarach_ir::RelationKind::RecordsExecutionOf,
+        position: fragarach_ir::DocumentPosition::NonEffective,
+        source_headings: &["位置づけ", "実施結果"],
+        target_headings: &["適用対象", "例外規則"],
+    },
+    RequiredRelationSlot {
+        purpose: "incident_change",
+        source_types: &["incident_report"],
+        source_status: Some("closed"),
+        target_types: &["incident_report"],
+        target_status: Some("open"),
+        kind: fragarach_ir::RelationKind::Supersedes,
+        position: fragarach_ir::DocumentPosition::Dominates,
+        source_headings: &["終結", "確定原因"],
+        target_headings: &["初報", "発生", "概要"],
+    },
+    RequiredRelationSlot {
+        purpose: "incident_change",
+        source_types: &["change_request"],
+        source_status: None,
+        target_types: &["incident_report"],
+        target_status: Some("closed"),
+        kind: fragarach_ir::RelationKind::DerivedFrom,
+        position: fragarach_ir::DocumentPosition::NonEffective,
+        source_headings: &["変更理由", "変更内容"],
+        target_headings: &["確定原因"],
+    },
+    RequiredRelationSlot {
+        purpose: "incident_change",
+        source_types: &["release_record"],
+        source_status: None,
+        target_types: &["change_request"],
+        target_status: None,
+        kind: fragarach_ir::RelationKind::RecordsExecutionOf,
+        position: fragarach_ir::DocumentPosition::NonEffective,
+        source_headings: &["実施内容", "位置づけ"],
+        target_headings: &["承認", "変更内容"],
+    },
+    RequiredRelationSlot {
+        purpose: "planning",
+        source_types: &["analysis", "options_analysis"],
+        source_status: None,
+        target_types: &["proposal"],
+        target_status: None,
+        kind: fragarach_ir::RelationKind::Evaluates,
+        position: fragarach_ir::DocumentPosition::NonEffective,
+        source_headings: &["比較対象", "評価"],
+        target_headings: &["初期案", "提案"],
+    },
+    RequiredRelationSlot {
+        purpose: "planning",
+        source_types: &["decision_minutes"],
+        source_status: None,
+        target_types: &["implementation_plan"],
+        target_status: None,
+        kind: fragarach_ir::RelationKind::Approves,
+        position: fragarach_ir::DocumentPosition::NonEffective,
+        source_headings: &["決定"],
+        target_headings: &["採用方式", "実施方式"],
+    },
+    RequiredRelationSlot {
+        purpose: "planning",
+        source_types: &["implementation_plan"],
+        source_status: None,
+        target_types: &["decision_minutes"],
+        target_status: None,
+        kind: fragarach_ir::RelationKind::ImplementsDecision,
+        position: fragarach_ir::DocumentPosition::NonEffective,
+        source_headings: &["採用方式", "実施方式"],
+        target_headings: &["決定"],
+    },
+    RequiredRelationSlot {
+        purpose: "commercial_compliance",
+        source_types: &["statement_of_work"],
+        source_status: None,
+        target_types: &["master_agreement", "master_contract"],
+        target_status: None,
+        kind: fragarach_ir::RelationKind::OrderOfPrecedence,
+        position: fragarach_ir::DocumentPosition::Dominates,
+        source_headings: &["優先", "個別条件"],
+        target_headings: &["優先順位", "標準条件"],
+    },
+    RequiredRelationSlot {
+        purpose: "commercial_compliance",
+        source_types: &["vendor_proposal"],
+        source_status: None,
+        target_types: &["master_agreement", "master_contract"],
+        target_status: None,
+        kind: fragarach_ir::RelationKind::ProposesChangeTo,
+        position: fragarach_ir::DocumentPosition::NonEffective,
+        source_headings: &["契約状態", "提案"],
+        target_headings: &["契約対象", "標準条件"],
+    },
+    RequiredRelationSlot {
+        purpose: "commercial_compliance",
+        source_types: &["audit_record"],
+        source_status: None,
+        target_types: &["statement_of_work"],
+        target_status: None,
+        kind: fragarach_ir::RelationKind::RecordsExecutionOf,
+        position: fragarach_ir::DocumentPosition::NonEffective,
+        source_headings: &["監査対象", "評価基準"],
+        target_headings: &["個別条件", "対象"],
+    },
+    RequiredRelationSlot {
+        purpose: "governance",
+        source_types: &["policy"],
+        source_status: Some("current"),
+        target_types: &["policy"],
+        target_status: Some("superseded"),
+        kind: fragarach_ir::RelationKind::Supersedes,
+        position: fragarach_ir::DocumentPosition::Dominates,
+        source_headings: &["旧版の扱い", "現行規則"],
+        target_headings: &["承認規則", "旧版"],
+    },
+    RequiredRelationSlot {
+        purpose: "governance",
+        source_types: &["faq"],
+        source_status: None,
+        target_types: &["policy"],
+        target_status: Some("current"),
+        kind: fragarach_ir::RelationKind::ConflictsWith,
+        position: fragarach_ir::DocumentPosition::NonEffective,
+        source_headings: &["旧案内", "更新状況"],
+        target_headings: &["現行規則"],
+    },
+    RequiredRelationSlot {
+        purpose: "governance",
+        source_types: &["approval_record"],
+        source_status: None,
+        target_types: &["policy"],
+        target_status: Some("current"),
+        kind: fragarach_ir::RelationKind::Approves,
+        position: fragarach_ir::DocumentPosition::NonEffective,
+        source_headings: &["承認対象", "決定"],
+        target_headings: &["現行規則", "目的"],
+    },
+];
+
+#[derive(Default)]
+struct RequiredRelationDossier {
+    purpose: String,
+    endpoints: Vec<RequiredRelationEndpoint>,
+}
+
+struct RequiredRelationEndpoint {
+    source_id: String,
+    document_type: String,
+    status: String,
+}
+
+fn required_relation_fallback_pairs(
+    evidence: &[PromptEvidence],
+    deterministic_relations: &[DocumentRelation],
+) -> (HashMap<String, String>, HashSet<RelationPair>) {
+    let mut dossiers = BTreeMap::<String, RequiredRelationDossier>::new();
+    let mut dossier_by_source = HashMap::new();
+    for item in evidence
+        .iter()
+        .filter(|item| item.text.trim_start().starts_with("---"))
+    {
+        let Some(scenario) = front_matter_value(&item.text, "scenario") else {
+            continue;
+        };
+        let Some(purpose) = front_matter_value(&item.text, "purpose") else {
+            continue;
+        };
+        if !REQUIRED_RELATION_SLOTS
+            .iter()
+            .any(|slot| slot.purpose == purpose)
+        {
+            continue;
+        }
+        let Some(document_type) = front_matter_value(&item.text, "document_type") else {
+            continue;
+        };
+        let status = front_matter_value(&item.text, "status").unwrap_or_default();
+        let dossier_key = format!("{scenario}\0{purpose}");
+        let dossier = dossiers.entry(dossier_key.clone()).or_default();
+        dossier.purpose = purpose;
+        if !dossier
+            .endpoints
+            .iter()
+            .any(|endpoint| endpoint.source_id == item.source_id)
+        {
+            dossier.endpoints.push(RequiredRelationEndpoint {
+                source_id: item.source_id.clone(),
+                document_type,
+                status,
+            });
+        }
+        dossier_by_source.insert(item.source_id.clone(), dossier_key);
+    }
+    let resolved = deterministic_relations
+        .iter()
+        .map(|relation| {
+            (
+                relation.source_id.as_str(),
+                relation_kind_name(&relation.kind),
+            )
+        })
+        .collect::<HashSet<_>>();
+    let mut fallback_pairs = HashSet::new();
+    for dossier in dossiers.values() {
+        for slot in REQUIRED_RELATION_SLOTS
+            .iter()
+            .filter(|slot| slot.purpose == dossier.purpose)
+        {
+            let mut targets = dossier
+                .endpoints
+                .iter()
+                .filter(|endpoint| {
+                    slot.target_types.contains(&endpoint.document_type.as_str())
+                        && slot
+                            .target_status
+                            .is_none_or(|required| endpoint.status == required)
+                })
+                .map(|endpoint| endpoint.source_id.as_str())
+                .collect::<Vec<_>>();
+            targets.sort_unstable();
+            for source in dossier.endpoints.iter().filter(|endpoint| {
+                slot.source_types.contains(&endpoint.document_type.as_str())
+                    && slot
+                        .source_status
+                        .is_none_or(|required| endpoint.status == required)
+                    && !resolved
+                        .contains(&(endpoint.source_id.as_str(), relation_kind_name(&slot.kind)))
+            }) {
+                fallback_pairs.extend(
+                    targets
+                        .iter()
+                        .copied()
+                        .filter(|target| *target != source.source_id)
+                        .take(MAX_RELATION_CANDIDATES_PER_SOURCE)
+                        .map(|target| canonical_relation_pair(&source.source_id, target)),
+                );
+            }
+        }
+    }
+    (dossier_by_source, fallback_pairs)
+}
+
+fn unresolved_required_relation_diagnostics(
+    relations: &[DocumentRelation],
+    evidence: &[PromptEvidence],
+) -> Vec<Diagnostic> {
+    let resolved = relations
+        .iter()
+        .map(|relation| {
+            (
+                relation.source_id.as_str(),
+                relation_kind_name(&relation.kind),
+            )
+        })
+        .collect::<HashSet<_>>();
+    let mut diagnostics = Vec::new();
+    for item in evidence
+        .iter()
+        .filter(|item| item.text.trim_start().starts_with("---"))
+    {
+        let Some(purpose) = front_matter_value(&item.text, "purpose") else {
+            continue;
+        };
+        let Some(document_type) = front_matter_value(&item.text, "document_type") else {
+            continue;
+        };
+        let status = front_matter_value(&item.text, "status").unwrap_or_default();
+        for slot in REQUIRED_RELATION_SLOTS.iter().filter(|slot| {
+            slot.purpose == purpose
+                && slot.source_types.contains(&document_type.as_str())
+                && slot.source_status.is_none_or(|required| status == required)
+                && !resolved.contains(&(item.source_id.as_str(), relation_kind_name(&slot.kind)))
+        }) {
+            let kind = relation_kind_name(&slot.kind);
+            diagnostics.push(Diagnostic {
+                id: format!(
+                    "diag_relation_slot_{}",
+                    &sha256_hex(
+                        format!("{}:{}:{kind}", item.source_id, slot.purpose).as_bytes()
+                    )[..16]
+                ),
+                code: "FRG-REL-UNRESOLVED-REQUIRED-SLOT".to_owned(),
+                severity: DiagnosticSeverity::Warning,
+                message: "必須Document Relationの接続先を一意に確定できませんでした"
+                    .to_owned(),
+                target_ids: vec![item.source_id.clone()],
+                evidence_ids: vec![item.evidence_id.clone()],
+                reason: format!(
+                    "purpose={}; document_type={document_type}; relation_kind={kind}",
+                    slot.purpose
+                ),
+                suggestions: vec![
+                    "front matterのscopeへ対象文書IDを明示するか、LLM providerで不足Relationを補完してください"
+                        .to_owned(),
+                ],
+                questions: vec!["この文書が参照・評価する対象文書はどれですか？".to_owned()],
+            });
+        }
+    }
+    diagnostics.sort_by(|left, right| left.id.cmp(&right.id));
+    diagnostics.dedup_by(|left, right| left.id == right.id);
+    diagnostics
+}
+
+fn complete_required_relation_slots(
+    relations: &mut Vec<DocumentRelation>,
+    additions: &mut Vec<DocumentRelation>,
+    profiles: &[DocumentProfile],
+    evidence: &[PromptEvidence],
+) {
+    let profile_by_id = profiles
+        .iter()
+        .map(|profile| (profile.source_id.as_str(), profile))
+        .collect::<HashMap<_, _>>();
+    let mut dossiers = BTreeMap::<String, RequiredRelationDossier>::new();
+    let mut dossier_by_source = HashMap::<String, String>::new();
+    let mut evidence_by_source = HashMap::<&str, Vec<&PromptEvidence>>::new();
+    for item in evidence {
+        evidence_by_source
+            .entry(item.source_id.as_str())
+            .or_default()
+            .push(item);
+        if !item.text.trim_start().starts_with("---") {
+            continue;
+        }
+        let Some(scenario) = front_matter_value(&item.text, "scenario") else {
+            continue;
+        };
+        let Some(purpose) = front_matter_value(&item.text, "purpose") else {
+            continue;
+        };
+        let Some(document_type) = front_matter_value(&item.text, "document_type") else {
+            continue;
+        };
+        let status = front_matter_value(&item.text, "status").unwrap_or_default();
+        let dossier_key = format!("{scenario}\0{purpose}");
+        let dossier = dossiers.entry(dossier_key.clone()).or_default();
+        dossier.purpose = purpose.clone();
+        if !dossier
+            .endpoints
+            .iter()
+            .any(|endpoint| endpoint.source_id == item.source_id)
+        {
+            dossier.endpoints.push(RequiredRelationEndpoint {
+                source_id: item.source_id.clone(),
+                document_type: document_type.clone(),
+                status: status.clone(),
+            });
+        }
+        dossier_by_source.insert(item.source_id.clone(), dossier_key);
+    }
+    let explicit_document_references = required_relation_document_references(profiles, evidence);
+
+    let mut required_edges = Vec::<(&RequiredRelationSlot, String, String)>::new();
+    for dossier in dossiers.values() {
+        for slot in REQUIRED_RELATION_SLOTS
+            .iter()
+            .filter(|slot| slot.purpose == dossier.purpose)
+        {
+            required_edges.extend(
+                required_relation_endpoint_pairs(
+                    dossier,
+                    slot,
+                    &profile_by_id,
+                    &explicit_document_references,
+                )
+                .into_iter()
+                .map(|(source_id, target_id)| (slot, source_id, target_id)),
+            );
+        }
+    }
+    required_edges.sort_by(|left, right| {
+        left.1
+            .cmp(&right.1)
+            .then_with(|| left.2.cmp(&right.2))
+            .then_with(|| relation_kind_name(&left.0.kind).cmp(&relation_kind_name(&right.0.kind)))
+    });
+    required_edges.dedup_by(|left, right| {
+        left.1 == right.1 && left.2 == right.2 && left.0.kind == right.0.kind
+    });
+    let allowed_edges = required_edges
+        .iter()
+        .map(|(slot, source_id, target_id)| {
+            (
+                source_id.clone(),
+                target_id.clone(),
+                relation_kind_name(&slot.kind),
+            )
+        })
+        .collect::<HashSet<_>>();
+
+    relations.retain(|relation| {
+        required_relation_shape_allowed(relation, &dossiers, &dossier_by_source, &allowed_edges)
+    });
+    additions.retain(|relation| {
+        required_relation_shape_allowed(relation, &dossiers, &dossier_by_source, &allowed_edges)
+    });
+    deduplicate_required_relation_edges(relations, &dossiers, &dossier_by_source);
+
+    let mut existing = relations
+        .iter()
+        .chain(additions.iter())
+        .map(|relation| {
+            (
+                relation.source_id.clone(),
+                relation.target_id.clone(),
+                relation_kind_name(&relation.kind),
+            )
+        })
+        .collect::<HashSet<_>>();
+    for (slot, source_id, target_id) in required_edges {
+        let kind_name = relation_kind_name(&slot.kind);
+        if !existing.insert((source_id.clone(), target_id.clone(), kind_name.clone())) {
+            continue;
+        }
+        let references = [
+            required_slot_evidence(
+                &source_id,
+                slot.source_headings,
+                evidence_by_source
+                    .get(source_id.as_str())
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
+            ),
+            required_slot_evidence(
+                &target_id,
+                slot.target_headings,
+                evidence_by_source
+                    .get(target_id.as_str())
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        if references.len() < 2 {
+            continue;
+        }
+        let Some(source_profile) = profile_by_id.get(source_id.as_str()).copied() else {
+            continue;
+        };
+        let key = format!("{source_id}:{target_id}:{kind_name}:required-slot");
+        additions.push(DocumentRelation {
+            id: format!("slot_{}", &sha256_hex(key.as_bytes())[..16]),
+            position: slot.position.clone(),
+            kind: slot.kind.clone(),
+            source_id,
+            target_id,
+            source_clauses: slot
+                .source_headings
+                .first()
+                .map(|heading| (*heading).to_owned())
+                .into_iter()
+                .collect(),
+            target_clauses: slot
+                .target_headings
+                .first()
+                .map(|heading| (*heading).to_owned())
+                .into_iter()
+                .collect(),
+            scope: source_profile.scope.clone(),
+            valid_from: source_profile.time.valid_from.clone(),
+            valid_to: source_profile.time.valid_to.clone(),
+            evidence: references,
+        });
+    }
+}
+
+fn required_relation_endpoint_pairs(
+    dossier: &RequiredRelationDossier,
+    slot: &RequiredRelationSlot,
+    profiles: &HashMap<&str, &DocumentProfile>,
+    explicit_document_references: &HashMap<String, Vec<String>>,
+) -> Vec<(String, String)> {
+    let sources = dossier
+        .endpoints
+        .iter()
+        .filter(|endpoint| {
+            slot.source_types.contains(&endpoint.document_type.as_str())
+                && slot
+                    .source_status
+                    .is_none_or(|status| endpoint.status == status)
+        })
+        .collect::<Vec<_>>();
+    let targets = dossier
+        .endpoints
+        .iter()
+        .filter(|endpoint| {
+            slot.target_types.contains(&endpoint.document_type.as_str())
+                && slot
+                    .target_status
+                    .is_none_or(|status| endpoint.status == status)
+        })
+        .collect::<Vec<_>>();
+    if sources.is_empty() || targets.is_empty() {
+        return Vec::new();
+    }
+    if targets.len() == 1 {
+        return sources
+            .into_iter()
+            .filter(|source| source.source_id != targets[0].source_id)
+            .map(|source| (source.source_id.clone(), targets[0].source_id.clone()))
+            .collect();
+    }
+
+    let mut targets_by_document_id = HashMap::<String, Option<&RequiredRelationEndpoint>>::new();
+    let mut scope_postings = HashMap::<String, Vec<&RequiredRelationEndpoint>>::new();
+    for target in &targets {
+        let Some(profile) = profiles.get(target.source_id.as_str()).copied() else {
+            continue;
+        };
+        if let Some(document_id) = profile.document_id.as_deref() {
+            targets_by_document_id
+                .entry(required_relation_match_value(document_id))
+                .and_modify(|entry| *entry = None)
+                .or_insert(Some(target));
+        }
+        for token in required_relation_scope_tokens(profile) {
+            let posting = scope_postings.entry(token).or_default();
+            if posting.len() <= MAX_RELATION_POSTING {
+                posting.push(target);
+            }
+        }
+    }
+    scope_postings.retain(|_, posting| posting.len() <= MAX_RELATION_POSTING);
+
+    let mut pairs = Vec::new();
+    for source in sources {
+        let Some(profile) = profiles.get(source.source_id.as_str()).copied() else {
+            continue;
+        };
+        let mut direct = profile_scope_values(&profile.scope)
+            .into_iter()
+            .flat_map(|(_, values)| values)
+            .map(String::as_str)
+            .chain(
+                explicit_document_references
+                    .get(&source.source_id)
+                    .into_iter()
+                    .flatten()
+                    .map(String::as_str),
+            )
+            .filter_map(|value| {
+                targets_by_document_id
+                    .get(&required_relation_match_value(value))
+                    .copied()
+                    .flatten()
+            })
+            .filter(|target| target.source_id != source.source_id)
+            .collect::<Vec<_>>();
+        direct.sort_by(|left, right| left.source_id.cmp(&right.source_id));
+        direct.dedup_by(|left, right| left.source_id == right.source_id);
+        if let [target] = direct.as_slice() {
+            pairs.push((source.source_id.clone(), target.source_id.clone()));
+            continue;
+        }
+
+        let mut scores = HashMap::<&str, u16>::new();
+        for token in required_relation_scope_tokens(profile) {
+            for target in scope_postings.get(&token).into_iter().flatten() {
+                if target.source_id != source.source_id {
+                    *scores.entry(target.source_id.as_str()).or_default() += 1;
+                }
+            }
+        }
+        let Some(max_score) = scores.values().copied().max() else {
+            continue;
+        };
+        let mut best = scores
+            .into_iter()
+            .filter(|(_, score)| *score == max_score)
+            .map(|(target_id, _)| target_id);
+        let Some(target_id) = best.next() else {
+            continue;
+        };
+        if best.next().is_none() {
+            pairs.push((source.source_id.clone(), target_id.to_owned()));
+        }
+    }
+    pairs
+}
+
+fn required_relation_document_references(
+    profiles: &[DocumentProfile],
+    evidence: &[PromptEvidence],
+) -> HashMap<String, Vec<String>> {
+    let mut document_ids = HashMap::<String, Option<String>>::new();
+    for profile in profiles {
+        let Some(document_id) = profile.document_id.as_deref() else {
+            continue;
+        };
+        document_ids
+            .entry(required_relation_match_value(document_id))
+            .and_modify(|source_id| *source_id = None)
+            .or_insert_with(|| Some(profile.source_id.clone()));
+    }
+    document_ids.retain(|_, source_id| source_id.is_some());
+
+    let mut references = HashMap::<String, Vec<String>>::new();
+    for item in evidence
+        .iter()
+        .filter(|item| !item.text.trim_start().starts_with("---"))
+    {
+        let targets = references.entry(item.source_id.clone()).or_default();
+        if targets.len() >= MAX_RELATION_LEXICAL_KEYS_PER_SOURCE {
+            continue;
+        }
+        let mut token = String::new();
+        for character in item.text.chars().chain(std::iter::once(' ')) {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                token.push(character);
+                continue;
+            }
+            if !token.is_empty() {
+                let normalized = required_relation_match_value(token.trim_matches('.'));
+                if document_ids.contains_key(&normalized)
+                    && !targets.iter().any(|target| target == &normalized)
+                {
+                    targets.push(normalized);
+                    if targets.len() >= MAX_RELATION_LEXICAL_KEYS_PER_SOURCE {
+                        break;
+                    }
+                }
+                token.clear();
+            }
+        }
+    }
+    references
+}
+
+fn required_relation_scope_tokens(profile: &DocumentProfile) -> Vec<String> {
+    profile_scope_values(&profile.scope)
+        .into_iter()
+        .flat_map(|(dimension, values)| {
+            values
+                .iter()
+                .map(move |value| format!("{dimension}:{}", required_relation_match_value(value)))
+        })
+        .take(MAX_RELATION_LEXICAL_KEYS_PER_SOURCE)
+        .collect()
+}
+
+fn required_relation_match_value(value: &str) -> String {
+    value.trim().to_lowercase()
+}
+
+fn required_relation_shape_allowed(
+    relation: &DocumentRelation,
+    dossiers: &BTreeMap<String, RequiredRelationDossier>,
+    dossier_by_source: &HashMap<String, String>,
+    allowed_edges: &HashSet<(String, String, String)>,
+) -> bool {
+    if relation.id.starts_with("position_") {
+        return true;
+    }
+    let Some(dossier_key) = dossier_by_source.get(&relation.source_id) else {
+        return true;
+    };
+    let Some(dossier) = dossiers.get(dossier_key) else {
+        return true;
+    };
+    if !REQUIRED_RELATION_SLOTS
+        .iter()
+        .any(|slot| slot.purpose == dossier.purpose)
+    {
+        return true;
+    }
+    if dossier_by_source.get(&relation.target_id) != Some(dossier_key) {
+        return false;
+    }
+    let kind = relation_kind_name(&relation.kind);
+    if allowed_edges.contains(&(
+        relation.source_id.clone(),
+        relation.target_id.clone(),
+        kind.clone(),
+    )) {
+        return true;
+    }
+    if allowed_edges.iter().any(|(source_id, _, allowed_kind)| {
+        source_id == &relation.source_id && allowed_kind == &kind
+    }) {
+        return false;
+    }
+    let Some(source) = dossier
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.source_id == relation.source_id)
+    else {
+        return false;
+    };
+    let Some(target) = dossier
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.source_id == relation.target_id)
+    else {
+        return false;
+    };
+    REQUIRED_RELATION_SLOTS.iter().any(|slot| {
+        slot.purpose == dossier.purpose
+            && relation_kind_name(&slot.kind) == kind
+            && slot.source_types.contains(&source.document_type.as_str())
+            && slot
+                .source_status
+                .is_none_or(|required| source.status == required)
+            && slot.target_types.contains(&target.document_type.as_str())
+            && slot
+                .target_status
+                .is_none_or(|required| target.status == required)
+    })
+}
+
+fn deduplicate_required_relation_edges(
+    relations: &mut Vec<DocumentRelation>,
+    dossiers: &BTreeMap<String, RequiredRelationDossier>,
+    dossier_by_source: &HashMap<String, String>,
+) {
+    let mut seen = HashSet::new();
+    relations.retain(|relation| {
+        if relation.id.starts_with("position_") {
+            return true;
+        }
+        let Some(dossier) = dossier_by_source
+            .get(&relation.source_id)
+            .and_then(|key| dossiers.get(key))
+        else {
+            return true;
+        };
+        let kind = relation_kind_name(&relation.kind);
+        if !REQUIRED_RELATION_SLOTS
+            .iter()
+            .any(|slot| slot.purpose == dossier.purpose && relation_kind_name(&slot.kind) == kind)
+        {
+            return true;
+        }
+        seen.insert((relation.source_id.clone(), relation.target_id.clone(), kind))
+    });
+}
+
+fn required_slot_evidence(
+    source_id: &str,
+    headings: &[&str],
+    evidence: &[&PromptEvidence],
+) -> Option<fragarach_ir::EvidenceReference> {
+    evidence
+        .iter()
+        .copied()
+        .filter(|item| {
+            !item.text.trim_start().starts_with("---")
+                && item
+                    .heading_path
+                    .iter()
+                    .any(|heading| headings.iter().any(|candidate| heading.contains(candidate)))
+                && !item.text.contains("この節では")
+        })
+        .min_by_key(|item| item.text.chars().count())
+        .or_else(|| {
+            evidence
+                .iter()
+                .copied()
+                .find(|item| item.text.trim_start().starts_with("---"))
+        })
+        .map(|item| fragarach_ir::EvidenceReference {
+            source_id: source_id.to_owned(),
+            evidence_id: item.evidence_id.clone(),
+        })
+}
+
+#[derive(Default)]
+struct IncidentChangeDossier {
+    initial: Option<String>,
+    final_report: Option<String>,
+    change_request: Option<String>,
+    release_record: Option<String>,
+}
+
+fn complete_incident_change_relations(
+    relations: &mut Vec<DocumentRelation>,
+    additions: &mut Vec<DocumentRelation>,
+    profiles: &[DocumentProfile],
+    evidence: &[PromptEvidence],
+) {
+    let profile_by_id = profiles
+        .iter()
+        .map(|profile| (profile.source_id.as_str(), profile))
+        .collect::<HashMap<_, _>>();
+    let mut dossiers = BTreeMap::<String, IncidentChangeDossier>::new();
+    let mut source_dossier = HashMap::<String, String>::new();
+    let mut evidence_by_source = HashMap::<&str, Vec<&PromptEvidence>>::new();
+    for item in evidence {
+        evidence_by_source
+            .entry(item.source_id.as_str())
+            .or_default()
+            .push(item);
+        if !item.text.trim_start().starts_with("---") {
+            continue;
+        }
+        let Some(scenario) = front_matter_value(&item.text, "scenario") else {
+            continue;
+        };
+        let Some(document_type) = front_matter_value(&item.text, "document_type") else {
+            continue;
+        };
+        let status = front_matter_value(&item.text, "status").unwrap_or_default();
+        let dossier = dossiers.entry(scenario.clone()).or_default();
+        match (document_type.as_str(), status.as_str()) {
+            ("incident_report", "open") => dossier.initial = Some(item.source_id.clone()),
+            ("incident_report", "closed") => dossier.final_report = Some(item.source_id.clone()),
+            ("change_request", _) => dossier.change_request = Some(item.source_id.clone()),
+            ("release_record", _) => dossier.release_record = Some(item.source_id.clone()),
+            _ => continue,
+        }
+        source_dossier.insert(item.source_id.clone(), scenario);
+    }
+
+    relations.retain(|relation| {
+        let Some(scenario) = source_dossier.get(&relation.source_id) else {
+            return true;
+        };
+        if source_dossier.get(&relation.target_id) != Some(scenario) {
+            return true;
+        }
+        let dossier = &dossiers[scenario];
+        let expected = match relation.kind {
+            fragarach_ir::RelationKind::Supersedes => {
+                dossier.final_report.as_ref() == Some(&relation.source_id)
+                    && dossier.initial.as_ref() == Some(&relation.target_id)
+            }
+            fragarach_ir::RelationKind::RecordsExecutionOf => {
+                dossier.release_record.as_ref() == Some(&relation.source_id)
+                    && dossier.change_request.as_ref() == Some(&relation.target_id)
+            }
+            fragarach_ir::RelationKind::DerivedFrom => {
+                dossier.change_request.as_ref() == Some(&relation.source_id)
+                    && dossier.final_report.as_ref() == Some(&relation.target_id)
+            }
+            _ => false,
+        };
+        expected
+    });
+
+    let mut existing = relations
+        .iter()
+        .chain(additions.iter())
+        .map(|relation| {
+            (
+                relation.source_id.clone(),
+                relation.target_id.clone(),
+                relation_kind_name(&relation.kind),
+            )
+        })
+        .collect::<HashSet<_>>();
+    for dossier in dossiers.values() {
+        let Some(initial) = dossier.initial.as_deref() else {
+            continue;
+        };
+        let Some(final_report) = dossier.final_report.as_deref() else {
+            continue;
+        };
+        let Some(change_request) = dossier.change_request.as_deref() else {
+            continue;
+        };
+        let Some(release_record) = dossier.release_record.as_deref() else {
+            continue;
+        };
+        if let Some(reference) = explicit_incident_relation_evidence(
+            evidence_by_source
+                .get(final_report)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]),
+            &["最終報", "初報", "更新"],
+        ) {
+            push_completed_incident_relation(
+                additions,
+                &mut existing,
+                profile_by_id.get(final_report).copied(),
+                final_report,
+                initial,
+                fragarach_ir::RelationKind::Supersedes,
+                fragarach_ir::DocumentPosition::Dominates,
+                reference,
+            );
+        }
+        if let Some(reference) = explicit_incident_relation_evidence(
+            evidence_by_source
+                .get(release_record)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]),
+            &["変更申請", "実施証跡"],
+        ) {
+            push_completed_incident_relation(
+                additions,
+                &mut existing,
+                profile_by_id.get(release_record).copied(),
+                release_record,
+                change_request,
+                fragarach_ir::RelationKind::RecordsExecutionOf,
+                fragarach_ir::DocumentPosition::NonEffective,
+                reference,
+            );
+        }
+    }
+}
+
+fn explicit_incident_relation_evidence(
+    evidence: &[&PromptEvidence],
+    required_terms: &[&str],
+) -> Option<fragarach_ir::EvidenceReference> {
+    evidence
+        .iter()
+        .copied()
+        .filter(|item| required_terms.iter().all(|term| item.text.contains(term)))
+        .min_by_key(|item| item.text.chars().count())
+        .map(|item| fragarach_ir::EvidenceReference {
+            source_id: item.source_id.clone(),
+            evidence_id: item.evidence_id.clone(),
+        })
+}
+
+fn push_completed_incident_relation(
+    additions: &mut Vec<DocumentRelation>,
+    existing: &mut HashSet<(String, String, String)>,
+    source_profile: Option<&DocumentProfile>,
+    source_id: &str,
+    target_id: &str,
+    kind: fragarach_ir::RelationKind,
+    position: fragarach_ir::DocumentPosition,
+    evidence: fragarach_ir::EvidenceReference,
+) {
+    let kind_name = relation_kind_name(&kind);
+    if !existing.insert((
+        source_id.to_owned(),
+        target_id.to_owned(),
+        kind_name.clone(),
+    )) {
+        return;
+    }
+    let key = format!("{source_id}:{target_id}:{kind_name}");
+    additions.push(DocumentRelation {
+        id: format!("coverage_{}", &sha256_hex(key.as_bytes())[..16]),
+        position,
+        kind,
+        source_id: source_id.to_owned(),
+        target_id: target_id.to_owned(),
+        source_clauses: Vec::new(),
+        target_clauses: Vec::new(),
+        scope: source_profile
+            .map(|profile| profile.scope.clone())
+            .unwrap_or_default(),
+        valid_from: source_profile.and_then(|profile| profile.time.valid_from.clone()),
+        valid_to: source_profile.and_then(|profile| profile.time.valid_to.clone()),
+        evidence: vec![evidence],
+    });
+}
+
+fn relation_kind_name(kind: &fragarach_ir::RelationKind) -> String {
+    serde_json::to_value(kind)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "relation".to_owned())
 }
 
 fn incompatible_claim_evidence_scored(
     source_id: &str,
     target_id: &str,
-    claims: &[Claim],
+    claims: &HashMap<&str, Vec<&Claim>>,
 ) -> Option<(usize, Vec<fragarach_ir::EvidenceReference>)> {
     claim_pair_evidence_scored(source_id, target_id, claims, |left, right| {
         crate::predicate_is_single_valued(&left.predicate)
@@ -2708,7 +5017,7 @@ fn incompatible_claim_evidence_scored(
 fn corroborating_claim_evidence(
     source_id: &str,
     target_id: &str,
-    claims: &[Claim],
+    claims: &HashMap<&str, Vec<&Claim>>,
 ) -> Option<Vec<fragarach_ir::EvidenceReference>> {
     claim_pair_evidence_scored(source_id, target_id, claims, |left, right| {
         crate::claim_objects_equivalent(left, right)
@@ -2724,25 +5033,15 @@ fn corroborating_claim_evidence(
 fn claim_pair_evidence_scored<F>(
     source_id: &str,
     target_id: &str,
-    claims: &[Claim],
+    claims: &HashMap<&str, Vec<&Claim>>,
     matches: F,
 ) -> Option<(usize, Vec<fragarach_ir::EvidenceReference>)>
 where
     F: Fn(&Claim, &Claim) -> bool,
 {
     let mut best = None;
-    for left in claims.iter().filter(|claim| {
-        claim
-            .evidence
-            .iter()
-            .any(|reference| reference.source_id == source_id)
-    }) {
-        for right in claims.iter().filter(|claim| {
-            claim
-                .evidence
-                .iter()
-                .any(|reference| reference.source_id == target_id)
-        }) {
+    for left in claims.get(source_id).into_iter().flatten() {
+        for right in claims.get(target_id).into_iter().flatten() {
             if !matches(left, right) {
                 continue;
             }
@@ -2783,10 +5082,11 @@ where
 
 fn proposed_technical_change_topic<'a>(
     source_id: &str,
-    evidence: &'a [PromptEvidence],
+    evidence: &'a [&'a PromptEvidence],
 ) -> Option<(&'a PromptEvidence, String)> {
     evidence
         .iter()
+        .copied()
         .filter(|item| {
             item.source_id == source_id
                 && item
@@ -2803,26 +5103,29 @@ fn proposed_technical_change_topic<'a>(
 }
 
 fn matching_decision_plan_evidence(
-    decision_source_id: &str,
-    plan_source_id: &str,
-    evidence: &[PromptEvidence],
+    decision_evidence: &[&PromptEvidence],
+    plan_evidence: &[&PromptEvidence],
 ) -> Option<Vec<fragarach_ir::EvidenceReference>> {
-    let decision_items = evidence.iter().filter(|item| {
-        item.source_id == decision_source_id
-            && item
-                .heading_path
+    let decision_items = decision_evidence
+        .iter()
+        .copied()
+        .filter(|item| {
+            item.heading_path
                 .iter()
                 .any(|heading| heading.contains("決定"))
-            && (item.text.contains("正式採用") || item.text.contains("正式な実施方式"))
-    });
-    let plan_items = evidence.iter().filter(|item| {
-        item.source_id == plan_source_id
-            && item
-                .heading_path
+                && (item.text.contains("正式採用") || item.text.contains("正式な実施方式"))
+        })
+        .take(MAX_RELATION_MATCH_EVIDENCE_PER_SOURCE);
+    let plan_items = plan_evidence
+        .iter()
+        .copied()
+        .filter(|item| {
+            item.heading_path
                 .iter()
                 .any(|heading| heading.contains("採用方式"))
-            && item.text.contains("実施方式")
-    });
+                && item.text.contains("実施方式")
+        })
+        .take(MAX_RELATION_MATCH_EVIDENCE_PER_SOURCE);
     let mut candidates = decision_items
         .flat_map(|decision| {
             let decision_phrases = quoted_phrases(&decision.text);
@@ -3018,7 +5321,8 @@ fn build_decision_packets(
             }
             let (source_role, target_role) = match relation.kind {
                 fragarach_ir::RelationKind::Approves
-                | fragarach_ir::RelationKind::RecordsExecutionOf => {
+                | fragarach_ir::RelationKind::RecordsExecutionOf
+                | fragarach_ir::RelationKind::Evaluates => {
                     (PacketMaterialRole::Verifier, PacketMaterialRole::Governing)
                 }
                 fragarach_ir::RelationKind::ImplementsDecision => {
@@ -3488,6 +5792,7 @@ fn relation_evidence_score(relation: &DocumentRelation, item: &PromptEvidence) -
             "矛盾",
         ],
         "approves" => &["承認", "決定", "採用", "施行", "対象"],
+        "evaluates" => &["分析", "比較", "評価", "提案", "初期案", "優位"],
         "implements_decision" => &[
             "決定",
             "計画",
@@ -3565,6 +5870,20 @@ struct CachedProfileExtraction {
     response: DocumentProfileExtractionResponse,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct CachedRelationExtraction {
+    format_version: u32,
+    #[serde(default)]
+    created_at: Option<chrono::DateTime<Utc>>,
+    #[serde(default)]
+    identity: String,
+    #[serde(default)]
+    source_ids: Vec<String>,
+    #[serde(default)]
+    evidence_ids: Vec<String>,
+    response: DocumentRelationExtractionResponse,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ExtractionCacheEntrySummary {
     pub path: PathBuf,
@@ -3584,10 +5903,6 @@ pub struct ExtractionCacheReport {
     pub entries: Vec<ExtractionCacheEntrySummary>,
     pub evidence_units: usize,
     pub claims: usize,
-}
-
-fn identity_for_cache(identity: &Option<String>) -> &str {
-    identity.as_deref().unwrap_or_default()
 }
 
 fn extraction_cache_path(
@@ -3769,6 +6084,104 @@ fn save_cached_profile_extraction(
     Ok(())
 }
 
+fn relation_extraction_cache_path(
+    cache_root: &Path,
+    identity: &str,
+    request: &DocumentRelationExtractionRequest,
+) -> Result<PathBuf> {
+    let mut hasher = Sha256::new();
+    hasher.update(format!(
+        "fragarach-relation-extraction-cache-v{EXTRACTION_CACHE_FORMAT_VERSION}\0"
+    ));
+    hasher.update(identity.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(
+        serde_json::to_vec(request)
+            .context("failed to serialize relation extraction cache request")?,
+    );
+    let digest = hasher.finalize();
+    let mut key = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        write!(&mut key, "{byte:02x}").unwrap();
+    }
+    Ok(cache_root.join(&key[..2]).join(format!("{key}.json")))
+}
+
+fn load_cached_relation_extraction(
+    path: &Path,
+) -> Result<Option<DocumentRelationExtractionResponse>> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let entry: CachedRelationExtraction =
+        serde_json::from_slice(&fs::read(path).with_context(|| {
+            format!(
+                "failed to read relation extraction cache {}",
+                path.display()
+            )
+        })?)
+        .with_context(|| {
+            format!(
+                "failed to parse relation extraction cache {}",
+                path.display()
+            )
+        })?;
+    if entry.format_version != EXTRACTION_CACHE_FORMAT_VERSION {
+        return Ok(None);
+    }
+    Ok(Some(entry.response))
+}
+
+fn save_cached_relation_extraction(
+    path: &Path,
+    identity: &str,
+    request: &DocumentRelationExtractionRequest,
+    response: &DocumentRelationExtractionResponse,
+) -> Result<()> {
+    if path.is_file() {
+        return Ok(());
+    }
+    let parent = path
+        .parent()
+        .context("relation extraction cache path has no parent directory")?;
+    fs::create_dir_all(parent)?;
+    let unique = Utc::now().timestamp_nanos_opt().unwrap_or_default();
+    let temporary = parent.join(format!(".relation-cache-write-{unique}.tmp"));
+    let mut source_ids = request
+        .evidence
+        .iter()
+        .map(|item| item.source_id.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    source_ids.sort();
+    let entry = CachedRelationExtraction {
+        format_version: EXTRACTION_CACHE_FORMAT_VERSION,
+        created_at: Some(Utc::now()),
+        identity: identity.to_owned(),
+        source_ids,
+        evidence_ids: request
+            .evidence
+            .iter()
+            .map(|item| item.evidence_id.clone())
+            .collect(),
+        response: response.clone(),
+    };
+    fs::write(&temporary, serde_json::to_vec(&entry)?).with_context(|| {
+        format!(
+            "failed to write relation extraction cache {}",
+            temporary.display()
+        )
+    })?;
+    fs::rename(&temporary, path).with_context(|| {
+        format!(
+            "failed to atomically publish relation extraction cache {}",
+            path.display()
+        )
+    })?;
+    Ok(())
+}
+
 pub fn read_extraction_cache_report(workspace: &Path) -> Result<ExtractionCacheReport> {
     let root = workspace
         .join(".fragarach")
@@ -3927,17 +6340,19 @@ fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CorpusSettings, apply_corpus_hints, build_decision_packets,
+        CompileStrategy, CorpusSettings, apply_corpus_hints, build_decision_packets,
         checklist_completeness_diagnostics, compact_profile_evidence,
         complete_relation_family_coverage, fallback_document_profile,
         intent_requests_checklist_completeness, merge_front_matter_positions,
-        normalize_relation_endpoints, refine_stale_guidance_relations, relation_evidence_score,
+        normalize_relation_endpoints, refine_stale_guidance_relations, relation_candidates,
+        relation_evidence_score, relation_request_dossiers, render_retrieval_profile,
         select_relation_evidence, source_aware_batches,
     };
+    use crate::ConflictContext;
     use fragarach_ir::{
-        ApplicabilityScope, Claim, DocumentPosition, DocumentRelation, DocumentRole,
-        EvidenceReference, IntentRequirements, PacketMaterialRole, PacketPurpose, RelationKind,
-        UsageIntent,
+        ApplicabilityScope, Claim, DocumentPosition, DocumentProfile, DocumentRelation,
+        DocumentRole, EvidenceReference, ForceLevel, ForceProfile, IntentRequirements,
+        PacketMaterialRole, PacketPurpose, RelationKind, TemporalProfile, UsageIntent,
     };
     use fragarach_llm::PromptEvidence;
 
@@ -3954,6 +6369,279 @@ mod tests {
             valid_to: None,
             text: index.to_string(),
         }
+    }
+
+    #[test]
+    fn dossier_strategy_serializes_canonically_and_accepts_hybrid_alias() {
+        assert_eq!(CompileStrategy::default(), CompileStrategy::DossierV1);
+        assert_eq!(
+            serde_json::from_str::<CompileStrategy>("\"dossier-v1\"").unwrap(),
+            CompileStrategy::DossierV1
+        );
+        assert_eq!(
+            serde_json::from_str::<CompileStrategy>("\"hybrid-v2\"").unwrap(),
+            CompileStrategy::DossierV1
+        );
+        assert_eq!(
+            serde_json::to_string(&CompileStrategy::DossierV1).unwrap(),
+            "\"dossier-v1\""
+        );
+    }
+
+    #[test]
+    fn retrieval_profile_declares_the_standard_v1_reranker() {
+        let profile = render_retrieval_profile(&ConflictContext::default());
+        assert!(profile.contains("algorithm: fragrach-soft-rerank-v1"));
+        assert!(profile.contains("candidate_limit: 20"));
+        assert!(profile.contains("candidate_set: preserve"));
+        assert!(profile.contains("governing: -4"));
+        assert!(profile.contains("verifier: -2"));
+        assert!(profile.contains("unclassified: 0"));
+        assert!(profile.contains("contender: 2"));
+        assert!(profile.contains("excluded: 6"));
+        assert!(profile.contains("tie_breaker: original_rank"));
+    }
+
+    fn dossier_evidence(source_id: &str, scenario: &str) -> PromptEvidence {
+        PromptEvidence {
+            source_id: source_id.to_owned(),
+            evidence_id: format!("ev-{source_id}"),
+            source_path: format!("domain/{scenario}/{source_id}.md"),
+            source_aliases: Vec::new(),
+            heading_path: Vec::new(),
+            authority: None,
+            lifecycle: None,
+            valid_from: None,
+            valid_to: None,
+            text: format!("---\nscenario: \"{scenario}\"\n---"),
+        }
+    }
+
+    #[test]
+    fn hybrid_relation_plans_keep_complete_dossiers_separate() {
+        let mut items = Vec::new();
+        let mut candidates = Vec::new();
+        for scenario in ["scenario-01", "scenario-02"] {
+            let sources = (0..4)
+                .map(|index| format!("{scenario}-source-{index}"))
+                .collect::<Vec<_>>();
+            items.extend(
+                sources
+                    .iter()
+                    .map(|source| dossier_evidence(source, scenario)),
+            );
+            for (index, left) in sources.iter().enumerate() {
+                for right in &sources[index + 1..] {
+                    candidates.push(super::canonical_relation_pair(left, right));
+                }
+            }
+        }
+        candidates.push(super::canonical_relation_pair(
+            "scenario-01-source-0",
+            "scenario-02-source-0",
+        ));
+
+        let plans = relation_request_dossiers(&candidates, &items);
+
+        assert_eq!(plans.len(), 2);
+        assert!(plans.iter().all(|plan| plan.allowed_pairs.len() == 6));
+        assert!(plans.iter().all(|plan| {
+            let scenarios = plan
+                .request
+                .evidence
+                .iter()
+                .map(|item| item.source_path.split('/').nth(1).unwrap())
+                .collect::<std::collections::HashSet<_>>();
+            scenarios.len() == 1
+        }));
+    }
+
+    #[test]
+    fn hybrid_relation_plans_separate_purposes_within_the_same_scenario() {
+        let mut items = Vec::new();
+        for purpose in ["governance", "planning"] {
+            for document in 0..4 {
+                let source_id = format!("{purpose}-{document}");
+                let mut item = dossier_evidence(&source_id, "scenario-01");
+                item.text = format!(
+                    "---\nscenario: scenario-01\npurpose: {purpose}\ndocument_type: note\n---"
+                );
+                items.push(item);
+            }
+        }
+
+        let plans = relation_request_dossiers(&[], &items);
+
+        assert_eq!(plans.len(), 2);
+        assert!(plans.iter().all(|plan| plan.allowed_pairs.len() == 6));
+        assert!(plans.iter().all(|plan| {
+            plan.request
+                .evidence
+                .iter()
+                .map(|item| item.source_id.split('-').next().unwrap())
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                == 1
+        }));
+    }
+
+    #[test]
+    fn hybrid_relation_plans_are_linear_for_bounded_dossiers() {
+        let mut items = Vec::new();
+        for dossier in 0..80 {
+            let scenario = format!("scenario-{dossier:03}");
+            for document in 0..4 {
+                items.push(dossier_evidence(
+                    &format!("source-{dossier:03}-{document}"),
+                    &scenario,
+                ));
+            }
+        }
+
+        let plans = relation_request_dossiers(&[], &items);
+        let edges = plans
+            .iter()
+            .map(|plan| plan.allowed_pairs.len())
+            .sum::<usize>();
+
+        assert_eq!(plans.len(), 80);
+        assert_eq!(edges, 480);
+        assert!(edges <= items.len() * 2);
+    }
+
+    #[test]
+    fn hybrid_relation_plans_shard_large_dossiers_without_losing_candidate_edges() {
+        let document_count = 5_000;
+        let items = (0..document_count)
+            .map(|index| dossier_evidence(&format!("source-{index:03}"), "large-scenario"))
+            .collect::<Vec<_>>();
+        let candidates = (0..document_count - 1)
+            .map(|index| {
+                super::canonical_relation_pair(
+                    &format!("source-{index:03}"),
+                    &format!("source-{:03}", index + 1),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let plans = relation_request_dossiers(&candidates, &items);
+        let planned_edges = plans
+            .iter()
+            .map(|plan| plan.allowed_pairs.len())
+            .sum::<usize>();
+
+        assert_eq!(planned_edges, candidates.len());
+        assert!(plans.iter().all(|plan| {
+            let sources = plan
+                .allowed_pairs
+                .iter()
+                .flat_map(|(left, right)| [left, right])
+                .collect::<std::collections::HashSet<_>>();
+            sources.len() <= super::MAX_HYBRID_DOSSIER_DOCUMENTS
+                && plan.allowed_pairs.len() <= super::MAX_HYBRID_DOSSIER_EDGES
+        }));
+    }
+
+    #[test]
+    fn incident_metadata_rejects_wrong_relation_shapes_and_completes_explicit_edges() {
+        let ids = ["initial", "final", "change", "release"];
+        let profiles = ids
+            .iter()
+            .map(|source_id| DocumentProfile {
+                source_id: (*source_id).to_owned(),
+                document_id: Some(format!("DOC-{source_id}")),
+                revision: None,
+                role: DocumentRole::Reference,
+                force: ForceProfile {
+                    level: ForceLevel::Informational,
+                    authority_rank: 1,
+                    approved: true,
+                },
+                scope: ApplicabilityScope::default(),
+                time: TemporalProfile::default(),
+                official_record: None,
+                evidence: vec![EvidenceReference {
+                    source_id: (*source_id).to_owned(),
+                    evidence_id: format!("meta-{source_id}"),
+                }],
+            })
+            .collect::<Vec<_>>();
+        let mut items = vec![
+            ("initial", "incident_report", "open"),
+            ("final", "incident_report", "closed"),
+            ("change", "change_request", "approved"),
+            ("release", "release_record", "completed"),
+        ]
+        .into_iter()
+        .map(|(source_id, document_type, status)| PromptEvidence {
+            source_id: source_id.to_owned(),
+            evidence_id: format!("meta-{source_id}"),
+            source_path: format!("scenario-01/{source_id}.md"),
+            source_aliases: Vec::new(),
+            heading_path: Vec::new(),
+            authority: None,
+            lifecycle: Some(status.to_owned()),
+            valid_from: None,
+            valid_to: None,
+            text: format!(
+                "---\nscenario: scenario-01\ndocument_type: {document_type}\nstatus: {status}\n---"
+            ),
+        })
+        .collect::<Vec<_>>();
+        items.push(PromptEvidence {
+            source_id: "final".to_owned(),
+            evidence_id: "final-update".to_owned(),
+            source_path: "scenario-01/final.md".to_owned(),
+            source_aliases: Vec::new(),
+            heading_path: vec!["終結".to_owned()],
+            authority: None,
+            lifecycle: None,
+            valid_from: None,
+            valid_to: None,
+            text: "本最終報は初報の未確認事項を更新する。".to_owned(),
+        });
+        items.push(PromptEvidence {
+            source_id: "release".to_owned(),
+            evidence_id: "release-proof".to_owned(),
+            source_path: "scenario-01/release.md".to_owned(),
+            source_aliases: Vec::new(),
+            heading_path: vec!["位置づけ".to_owned()],
+            authority: None,
+            lifecycle: None,
+            valid_from: None,
+            valid_to: None,
+            text: "本記録は変更申請の実施証跡である。".to_owned(),
+        });
+        let mut relations = vec![DocumentRelation {
+            id: "wrong".to_owned(),
+            position: DocumentPosition::Dominates,
+            kind: RelationKind::ImplementsDecision,
+            source_id: "release".to_owned(),
+            target_id: "change".to_owned(),
+            source_clauses: Vec::new(),
+            target_clauses: Vec::new(),
+            scope: ApplicabilityScope::default(),
+            valid_from: None,
+            valid_to: None,
+            evidence: vec![EvidenceReference {
+                source_id: "release".to_owned(),
+                evidence_id: "release-proof".to_owned(),
+            }],
+        }];
+
+        complete_relation_family_coverage(&mut relations, &profiles, &[], &items);
+
+        assert_eq!(relations.len(), 2);
+        assert!(relations.iter().any(|relation| {
+            relation.source_id == "final"
+                && relation.target_id == "initial"
+                && relation.kind == RelationKind::Supersedes
+        }));
+        assert!(relations.iter().any(|relation| {
+            relation.source_id == "release"
+                && relation.target_id == "change"
+                && relation.kind == RelationKind::RecordsExecutionOf
+        }));
     }
 
     fn grounded_claim(
@@ -3979,6 +6667,90 @@ mod tests {
                 evidence_id: evidence_id.to_owned(),
             }],
         }
+    }
+
+    fn candidate_profile(
+        source_id: &str,
+        document_id: &str,
+        contract: &str,
+    ) -> fragarach_ir::DocumentProfile {
+        fragarach_ir::DocumentProfile {
+            source_id: source_id.to_owned(),
+            document_id: Some(document_id.to_owned()),
+            revision: None,
+            role: DocumentRole::Reference,
+            force: ForceProfile {
+                level: ForceLevel::Informational,
+                authority_rank: 0,
+                approved: true,
+            },
+            scope: ApplicabilityScope {
+                contracts: vec![contract.to_owned()],
+                ..ApplicabilityScope::default()
+            },
+            time: TemporalProfile::default(),
+            official_record: None,
+            evidence: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn relation_candidate_graph_is_bounded_by_constant_sized_postings() {
+        let profiles = (0..320)
+            .map(|index| {
+                candidate_profile(
+                    &format!("source-{index:03}"),
+                    &format!("DOC-{index:03}"),
+                    &format!("contract-{}", index / 32),
+                )
+            })
+            .collect::<Vec<_>>();
+        let candidates = relation_candidates(&profiles, &[], &[]);
+        assert_eq!(candidates.len(), 10 * (32 * 31 / 2));
+        assert!(candidates.len() <= profiles.len() * 32);
+    }
+
+    #[test]
+    fn relation_candidate_graph_stays_linear_at_5000_documents() {
+        let profiles = (0..5_000)
+            .map(|index| {
+                candidate_profile(
+                    &format!("source-{index:04}"),
+                    &format!("DOC-{index:04}"),
+                    &format!("contract-{}", index / 32),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let candidates = relation_candidates(&profiles, &[], &[]);
+
+        assert_eq!(candidates.len(), 77_404);
+        assert!(candidates.len() <= profiles.len() * super::MAX_RELATION_CANDIDATES_PER_SOURCE);
+    }
+
+    #[test]
+    fn relation_candidate_graph_skips_unbounded_common_scope_postings() {
+        let profiles = (0..100)
+            .map(|index| {
+                candidate_profile(&format!("source-{index}"), &format!("DOC-{index}"), "all")
+            })
+            .collect::<Vec<_>>();
+        assert!(relation_candidates(&profiles, &[], &[]).is_empty());
+    }
+
+    #[test]
+    fn explicit_position_metadata_always_adds_its_target_candidate() {
+        let profiles = vec![
+            candidate_profile("new", "STD-1", "all"),
+            candidate_profile("old", "STD-0", "all"),
+        ];
+        let mut metadata = evidence("new", 0);
+        metadata.text =
+            "---\nposition: dominates\nposition_target_document_id: STD-0\n---".to_owned();
+        assert_eq!(
+            relation_candidates(&profiles, &[], &[metadata]),
+            vec![("new".to_owned(), "old".to_owned())]
+        );
     }
 
     #[test]
@@ -4487,6 +7259,28 @@ mod tests {
     }
 
     #[test]
+    fn explicit_front_matter_scope_populates_fallback_profile() {
+        let mut item = evidence("contract", 0);
+        item.text = concat!(
+            "---\n",
+            "document_type: statement_of_work\n",
+            "scope: {\"organization\":\"北辰クラウドサービス\",\"contract\":\"MASTER-001\",",
+            "\"products\":[\"運用サービス-001\",\"運用サービス-002\"]}\n",
+            "---"
+        )
+        .to_owned();
+
+        let profile = fallback_document_profile("contract", &[item]).unwrap();
+
+        assert_eq!(profile.scope.entities, ["北辰クラウドサービス"]);
+        assert_eq!(profile.scope.contracts, ["MASTER-001"]);
+        assert_eq!(
+            profile.scope.products,
+            ["運用サービス-001", "運用サービス-002"]
+        );
+    }
+
+    #[test]
     fn planning_document_types_map_to_analysis_and_record_roles() {
         let mut analysis = evidence("analysis", 0);
         analysis.text = "---\ndocument_type: options_analysis\nstatus: reviewed\n---".to_owned();
@@ -4546,6 +7340,620 @@ mod tests {
                 && relation.source_id == "plan"
                 && relation.target_id == "minutes"
         }));
+    }
+
+    #[test]
+    fn required_relation_slots_cover_enterprise_dossier_families_and_reject_wrong_shapes() {
+        let definitions = [
+            (
+                "spec",
+                "technical-1",
+                "technical_spec",
+                "technical_specification",
+                "current",
+                "変更管理",
+            ),
+            (
+                "amendment",
+                "technical-1",
+                "technical_spec",
+                "specification_amendment",
+                "current",
+                "対象条項",
+            ),
+            (
+                "test-record",
+                "technical-1",
+                "technical_spec",
+                "test_record",
+                "passed",
+                "試験対象",
+            ),
+            (
+                "draft",
+                "technical-1",
+                "technical_spec",
+                "technical_draft",
+                "draft",
+                "検討目的",
+            ),
+            (
+                "procedure",
+                "operations-1",
+                "operations",
+                "operating_procedure",
+                "current",
+                "対象",
+            ),
+            (
+                "work-instruction",
+                "operations-1",
+                "operations",
+                "work_instruction",
+                "current",
+                "上位手順",
+            ),
+            (
+                "deviation",
+                "operations-1",
+                "operations",
+                "temporary_deviation",
+                "active",
+                "例外規則",
+            ),
+            (
+                "execution-log",
+                "operations-1",
+                "operations",
+                "execution_log",
+                "completed",
+                "位置づけ",
+            ),
+            (
+                "initial",
+                "incident-1",
+                "incident_change",
+                "incident_report",
+                "open",
+                "初報",
+            ),
+            (
+                "final",
+                "incident-1",
+                "incident_change",
+                "incident_report",
+                "closed",
+                "確定原因",
+            ),
+            (
+                "change",
+                "incident-1",
+                "incident_change",
+                "change_request",
+                "approved",
+                "変更理由",
+            ),
+            (
+                "release",
+                "incident-1",
+                "incident_change",
+                "release_record",
+                "completed",
+                "実施内容",
+            ),
+            (
+                "proposal",
+                "planning-1",
+                "planning",
+                "proposal",
+                "draft",
+                "初期案",
+            ),
+            (
+                "analysis",
+                "planning-1",
+                "planning",
+                "options_analysis",
+                "reviewed",
+                "評価",
+            ),
+            (
+                "decision",
+                "planning-1",
+                "planning",
+                "decision_minutes",
+                "approved",
+                "決定",
+            ),
+            (
+                "plan",
+                "planning-1",
+                "planning",
+                "implementation_plan",
+                "approved",
+                "採用方式",
+            ),
+            (
+                "master",
+                "commercial-1",
+                "commercial_compliance",
+                "master_agreement",
+                "current",
+                "優先順位",
+            ),
+            (
+                "sow",
+                "commercial-1",
+                "commercial_compliance",
+                "statement_of_work",
+                "current",
+                "優先",
+            ),
+            (
+                "vendor",
+                "commercial-1",
+                "commercial_compliance",
+                "vendor_proposal",
+                "draft",
+                "契約状態",
+            ),
+            (
+                "audit",
+                "commercial-1",
+                "commercial_compliance",
+                "audit_record",
+                "completed",
+                "評価基準",
+            ),
+            (
+                "policy-v1",
+                "governance-1",
+                "governance",
+                "policy",
+                "superseded",
+                "承認規則",
+            ),
+            (
+                "policy-v2",
+                "governance-1",
+                "governance",
+                "policy",
+                "current",
+                "現行規則",
+            ),
+            (
+                "faq",
+                "governance-1",
+                "governance",
+                "faq",
+                "stale",
+                "旧案内",
+            ),
+            (
+                "approval",
+                "governance-1",
+                "governance",
+                "approval_record",
+                "approved",
+                "承認対象",
+            ),
+        ];
+        let mut profiles = Vec::new();
+        let mut items = Vec::new();
+        for (source_id, scenario, purpose, document_type, status, heading) in definitions {
+            let mut metadata = evidence(source_id, 0);
+            metadata.text = format!(
+                "---\nscenario: {scenario}\npurpose: {purpose}\ndocument_type: {document_type}\nstatus: {status}\napproved: true\n---"
+            );
+            let mut body = evidence(source_id, 1);
+            body.heading_path = vec![heading.to_owned()];
+            body.text = format!("{heading}について対象文書との関係を明示する。");
+            profiles.push(
+                fallback_document_profile(source_id, &[metadata.clone(), body.clone()]).unwrap(),
+            );
+            items.extend([metadata, body]);
+        }
+        let mut relations = vec![
+            DocumentRelation {
+                id: "provider_wrong_operational_position".to_owned(),
+                position: DocumentPosition::NonEffective,
+                kind: RelationKind::OperationalPosition,
+                source_id: "analysis".to_owned(),
+                target_id: "proposal".to_owned(),
+                source_clauses: Vec::new(),
+                target_clauses: Vec::new(),
+                scope: ApplicabilityScope::default(),
+                valid_from: None,
+                valid_to: None,
+                evidence: vec![EvidenceReference {
+                    source_id: "analysis".to_owned(),
+                    evidence_id: "ev-analysis-1".to_owned(),
+                }],
+            },
+            DocumentRelation {
+                id: "provider_wrong_cross_dossier".to_owned(),
+                position: DocumentPosition::NonEffective,
+                kind: RelationKind::ProposesChangeTo,
+                source_id: "vendor".to_owned(),
+                target_id: "policy-v2".to_owned(),
+                source_clauses: Vec::new(),
+                target_clauses: Vec::new(),
+                scope: ApplicabilityScope::default(),
+                valid_from: None,
+                valid_to: None,
+                evidence: vec![EvidenceReference {
+                    source_id: "vendor".to_owned(),
+                    evidence_id: "ev-vendor-1".to_owned(),
+                }],
+            },
+        ];
+
+        complete_relation_family_coverage(&mut relations, &profiles, &[], &items);
+
+        let actual = relations
+            .iter()
+            .map(|relation| {
+                (
+                    relation.source_id.as_str(),
+                    relation.target_id.as_str(),
+                    super::relation_kind_name(&relation.kind),
+                )
+            })
+            .collect::<std::collections::HashSet<_>>();
+        let expected = [
+            ("amendment", "spec", "amends".to_owned()),
+            (
+                "test-record",
+                "amendment",
+                "records_execution_of".to_owned(),
+            ),
+            ("draft", "spec", "proposes_change_to".to_owned()),
+            ("work-instruction", "procedure", "applies_to".to_owned()),
+            ("deviation", "procedure", "exception_to".to_owned()),
+            (
+                "execution-log",
+                "deviation",
+                "records_execution_of".to_owned(),
+            ),
+            ("final", "initial", "supersedes".to_owned()),
+            ("change", "final", "derived_from".to_owned()),
+            ("release", "change", "records_execution_of".to_owned()),
+            ("analysis", "proposal", "evaluates".to_owned()),
+            ("decision", "plan", "approves".to_owned()),
+            ("plan", "decision", "implements_decision".to_owned()),
+            ("sow", "master", "order_of_precedence".to_owned()),
+            ("vendor", "master", "proposes_change_to".to_owned()),
+            ("audit", "sow", "records_execution_of".to_owned()),
+            ("policy-v2", "policy-v1", "supersedes".to_owned()),
+            ("faq", "policy-v2", "conflicts_with".to_owned()),
+            ("approval", "policy-v2", "approves".to_owned()),
+        ]
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>();
+
+        assert_eq!(actual, expected);
+        assert!(
+            relations
+                .iter()
+                .all(|relation| relation.evidence.len() >= 2)
+        );
+    }
+
+    #[test]
+    fn required_relation_slots_match_repeated_commercial_endpoints_at_200_documents() {
+        let mut profiles = Vec::new();
+        let mut items = Vec::new();
+        let mut add_document = |source_id: &str,
+                                document_id: &str,
+                                document_type: &str,
+                                status: &str,
+                                heading: &str,
+                                contracts: Vec<String>,
+                                products: Vec<String>| {
+            let mut metadata = evidence(source_id, 0);
+            metadata.text = format!(
+                "---\ndocument_id: {document_id}\nscenario: large-commercial\npurpose: commercial_compliance\ndocument_type: {document_type}\nstatus: {status}\napproved: true\n---"
+            );
+            let mut body = evidence(source_id, 1);
+            body.heading_path = vec![heading.to_owned()];
+            body.text = format!("{heading}について対象文書との関係を明示する。");
+            let mut profile =
+                fallback_document_profile(source_id, &[metadata.clone(), body.clone()]).unwrap();
+            profile.scope.contracts = contracts;
+            profile.scope.products = products;
+            profiles.push(profile);
+            items.extend([metadata, body]);
+        };
+
+        add_document(
+            "master",
+            "MASTER-001",
+            "master_agreement",
+            "current",
+            "優先順位",
+            vec!["MASTER-001".to_owned()],
+            Vec::new(),
+        );
+        for index in 0..66 {
+            let product = format!("PRODUCT-{index:03}");
+            let sow_document_id = format!("SOW-{index:03}");
+            add_document(
+                &format!("sow-{index:03}"),
+                &sow_document_id,
+                "statement_of_work",
+                "current",
+                "優先",
+                vec!["MASTER-001".to_owned()],
+                vec![product.clone()],
+            );
+            add_document(
+                &format!("proposal-{index:03}"),
+                &format!("PROPOSAL-{index:03}"),
+                "vendor_proposal",
+                "proposed",
+                "契約状態",
+                vec!["MASTER-001".to_owned()],
+                vec![product.clone()],
+            );
+            add_document(
+                &format!("audit-{index:03}"),
+                &format!("AUDIT-{index:03}"),
+                "audit_record",
+                "completed",
+                "評価基準",
+                vec!["MASTER-001".to_owned(), sow_document_id],
+                vec![product],
+            );
+        }
+        add_document(
+            "supporting-note",
+            "NOTE-001",
+            "supporting_note",
+            "current",
+            "参考情報",
+            vec!["MASTER-001".to_owned()],
+            Vec::new(),
+        );
+        let mut relations = Vec::new();
+
+        complete_relation_family_coverage(&mut relations, &profiles, &[], &items);
+
+        assert_eq!(profiles.len(), 200);
+        assert_eq!(relations.len(), 198);
+        for index in 0..66 {
+            assert!(relations.iter().any(|relation| {
+                relation.source_id == format!("sow-{index:03}")
+                    && relation.target_id == "master"
+                    && relation.kind == RelationKind::OrderOfPrecedence
+            }));
+            assert!(relations.iter().any(|relation| {
+                relation.source_id == format!("proposal-{index:03}")
+                    && relation.target_id == "master"
+                    && relation.kind == RelationKind::ProposesChangeTo
+            }));
+            assert!(relations.iter().any(|relation| {
+                relation.source_id == format!("audit-{index:03}")
+                    && relation.target_id == format!("sow-{index:03}")
+                    && relation.kind == RelationKind::RecordsExecutionOf
+            }));
+        }
+    }
+
+    #[test]
+    fn repeated_endpoints_match_normalized_ids_and_reject_ambiguous_scope() {
+        let profile = |source_id: &str, document_id: &str, contracts: Vec<&str>| DocumentProfile {
+            source_id: source_id.to_owned(),
+            document_id: Some(document_id.to_owned()),
+            revision: None,
+            role: DocumentRole::Record,
+            force: ForceProfile {
+                level: ForceLevel::Informational,
+                authority_rank: 0,
+                approved: true,
+            },
+            scope: ApplicabilityScope {
+                entities: vec!["ORG".to_owned()],
+                contracts: contracts.into_iter().map(str::to_owned).collect(),
+                ..ApplicabilityScope::default()
+            },
+            time: TemporalProfile::default(),
+            official_record: Some(true),
+            evidence: Vec::new(),
+        };
+        let dossier = super::RequiredRelationDossier {
+            purpose: "commercial_compliance".to_owned(),
+            endpoints: vec![
+                super::RequiredRelationEndpoint {
+                    source_id: "audit".to_owned(),
+                    document_type: "audit_record".to_owned(),
+                    status: "completed".to_owned(),
+                },
+                super::RequiredRelationEndpoint {
+                    source_id: "sow-1".to_owned(),
+                    document_type: "statement_of_work".to_owned(),
+                    status: "current".to_owned(),
+                },
+                super::RequiredRelationEndpoint {
+                    source_id: "sow-2".to_owned(),
+                    document_type: "statement_of_work".to_owned(),
+                    status: "current".to_owned(),
+                },
+            ],
+        };
+        let slot = super::REQUIRED_RELATION_SLOTS
+            .iter()
+            .find(|slot| {
+                slot.purpose == "commercial_compliance"
+                    && slot.kind == RelationKind::RecordsExecutionOf
+            })
+            .unwrap();
+        let mut profiles = [
+            profile("audit", "AUDIT-001", vec!["MASTER-001"]),
+            profile("sow-1", "SOW-001", vec!["MASTER-001"]),
+            profile("sow-2", "SOW-002", vec!["MASTER-001"]),
+        ];
+        let index = profiles
+            .iter()
+            .map(|profile| (profile.source_id.as_str(), profile))
+            .collect();
+
+        assert!(
+            super::required_relation_endpoint_pairs(
+                &dossier,
+                slot,
+                &index,
+                &std::collections::HashMap::new(),
+            )
+            .is_empty()
+        );
+
+        let mut body = evidence("audit", 1);
+        body.text = "監査対象は個別契約「sow-001」に基づく履行である。".to_owned();
+        let references = super::required_relation_document_references(&profiles, &[body]);
+        assert_eq!(
+            super::required_relation_endpoint_pairs(&dossier, slot, &index, &references),
+            [("audit".to_owned(), "sow-1".to_owned())]
+        );
+
+        profiles[0].scope.contracts.push("  sow-001  ".to_owned());
+        let index = profiles
+            .iter()
+            .map(|profile| (profile.source_id.as_str(), profile))
+            .collect();
+        assert_eq!(
+            super::required_relation_endpoint_pairs(
+                &dossier,
+                slot,
+                &index,
+                &std::collections::HashMap::new(),
+            ),
+            [("audit".to_owned(), "sow-1".to_owned())]
+        );
+    }
+
+    #[test]
+    fn unresolved_required_slot_keeps_llm_fallback_shape_open() {
+        let dossier_key = "commercial\0commercial_compliance".to_owned();
+        let dossier = super::RequiredRelationDossier {
+            purpose: "commercial_compliance".to_owned(),
+            endpoints: vec![
+                super::RequiredRelationEndpoint {
+                    source_id: "audit".to_owned(),
+                    document_type: "audit_record".to_owned(),
+                    status: "completed".to_owned(),
+                },
+                super::RequiredRelationEndpoint {
+                    source_id: "sow-1".to_owned(),
+                    document_type: "statement_of_work".to_owned(),
+                    status: "current".to_owned(),
+                },
+                super::RequiredRelationEndpoint {
+                    source_id: "sow-2".to_owned(),
+                    document_type: "statement_of_work".to_owned(),
+                    status: "current".to_owned(),
+                },
+                super::RequiredRelationEndpoint {
+                    source_id: "master".to_owned(),
+                    document_type: "master_agreement".to_owned(),
+                    status: "current".to_owned(),
+                },
+            ],
+        };
+        let dossiers = [(dossier_key.clone(), dossier)].into_iter().collect();
+        let dossier_by_source = ["audit", "sow-1", "sow-2", "master"]
+            .into_iter()
+            .map(|source_id| (source_id.to_owned(), dossier_key.clone()))
+            .collect();
+        let relation = |target_id: &str| DocumentRelation {
+            id: format!("provider-audit-{target_id}"),
+            position: DocumentPosition::NonEffective,
+            kind: RelationKind::RecordsExecutionOf,
+            source_id: "audit".to_owned(),
+            target_id: target_id.to_owned(),
+            source_clauses: vec!["評価基準".to_owned()],
+            target_clauses: vec!["対象".to_owned()],
+            scope: ApplicabilityScope::default(),
+            valid_from: None,
+            valid_to: None,
+            evidence: Vec::new(),
+        };
+        let mut allowed = std::collections::HashSet::new();
+
+        assert!(super::required_relation_shape_allowed(
+            &relation("sow-1"),
+            &dossiers,
+            &dossier_by_source,
+            &allowed,
+        ));
+        assert!(!super::required_relation_shape_allowed(
+            &relation("master"),
+            &dossiers,
+            &dossier_by_source,
+            &allowed,
+        ));
+
+        allowed.insert((
+            "audit".to_owned(),
+            "sow-1".to_owned(),
+            "records_execution_of".to_owned(),
+        ));
+        assert!(!super::required_relation_shape_allowed(
+            &relation("sow-2"),
+            &dossiers,
+            &dossier_by_source,
+            &allowed,
+        ));
+    }
+
+    #[test]
+    fn incomplete_required_dossier_is_not_suppressed_from_llm_planning() {
+        let metadata = |source_id: &str, document_type: &str, status: &str| {
+            let mut item = evidence(source_id, 0);
+            item.text = format!(
+                "---\nscenario: commercial\npurpose: commercial_compliance\ndocument_type: {document_type}\nstatus: {status}\n---"
+            );
+            item
+        };
+        let items = vec![
+            metadata("master", "master_agreement", "current"),
+            metadata("sow", "statement_of_work", "current"),
+            metadata("audit", "audit_record", "completed"),
+        ];
+        let relation = |source_id: &str, target_id: &str, kind: RelationKind| DocumentRelation {
+            id: format!("{source_id}-{target_id}"),
+            position: DocumentPosition::NonEffective,
+            kind,
+            source_id: source_id.to_owned(),
+            target_id: target_id.to_owned(),
+            source_clauses: Vec::new(),
+            target_clauses: Vec::new(),
+            scope: ApplicabilityScope::default(),
+            valid_from: None,
+            valid_to: None,
+            evidence: Vec::new(),
+        };
+        let mut deterministic = vec![relation("sow", "master", RelationKind::OrderOfPrecedence)];
+
+        let diagnostics = super::unresolved_required_relation_diagnostics(&deterministic, &items);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].target_ids, ["audit"]);
+        assert_eq!(diagnostics[0].code, "FRG-REL-UNRESOLVED-REQUIRED-SLOT");
+        let (dossiers, fallback_pairs) =
+            super::required_relation_fallback_pairs(&items, &deterministic);
+        assert_eq!(dossiers.len(), 3);
+        assert_eq!(
+            fallback_pairs,
+            [("audit".to_owned(), "sow".to_owned())]
+                .into_iter()
+                .collect()
+        );
+
+        deterministic.push(relation("audit", "sow", RelationKind::RecordsExecutionOf));
+        assert!(super::unresolved_required_relation_diagnostics(&deterministic, &items).is_empty());
+        let (dossiers, fallback_pairs) =
+            super::required_relation_fallback_pairs(&items, &deterministic);
+        assert_eq!(dossiers.len(), 3);
+        assert!(fallback_pairs.is_empty());
     }
 
     #[test]

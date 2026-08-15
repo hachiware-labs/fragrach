@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="../assets/fragrach-logo.png" alt="Fragrach — The Anserer" width="360">
+</p>
+
 # Fragrach コーパス要求定義書
 
 - 文書名: Fragrach コーパス要求定義書

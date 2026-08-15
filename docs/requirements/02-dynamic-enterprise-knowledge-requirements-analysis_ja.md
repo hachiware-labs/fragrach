@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="../../assets/fragrach-logo.png" alt="Fragrach — The Anserer" width="360">
+</p>
+
 # Fragrach要件分析：動的な企業知識
 
 文書区分: 要件分析  
