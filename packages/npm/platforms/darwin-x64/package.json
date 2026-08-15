@@ -1,8 +1,8 @@
 {
-  "name": "@fragarach/cli-darwin-x64",
+  "name": "@hachiware-labs/fragarach-cli-darwin-x64",
   "version": "0.1.0",
   "description": "Fragrach Rust CLI for macOS x64",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "os": ["darwin"],
   "cpu": ["x64"],
   "files": ["bin"]

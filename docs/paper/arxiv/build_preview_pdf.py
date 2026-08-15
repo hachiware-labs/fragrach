@@ -488,10 +488,11 @@ def markdown_flowables(styles: dict[str, ParagraphStyle]):
             story.extend([Spacer(1, 4), KeepTogether([table]), Spacer(1, 7)])
             continue
 
-        if stripped == r"\[":
+        if stripped in (r"\[", "```math"):
+            closing_delimiter = r"\]" if stripped == r"\[" else "```"
             equation = []
             i += 1
-            while i < len(lines) and lines[i].strip() != r"\]":
+            while i < len(lines) and lines[i].strip() != closing_delimiter:
                 equation.append(lines[i].strip())
                 i += 1
             i += 1
@@ -535,7 +536,7 @@ def markdown_flowables(styles: dict[str, ParagraphStyle]):
                 break
             if (
                 candidate.startswith(("## ", "### ", "![", "|", ">", "- ", "* "))
-                or candidate == r"\["
+                or candidate in (r"\[", "```math")
                 or re.match(r"^\d+\.\s+", candidate)
             ):
                 break

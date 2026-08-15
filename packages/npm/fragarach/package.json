@@ -2,7 +2,7 @@
   "name": "fragarach",
   "version": "0.1.0",
   "description": "Purpose-driven, evidence-preserving knowledge compiler for RAG source corpora",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "bin": {
     "fragarach": "bin/fragarach.js"
   },
@@ -15,10 +15,10 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "@fragarach/cli-darwin-arm64": "0.1.0",
-    "@fragarach/cli-darwin-x64": "0.1.0",
-    "@fragarach/cli-linux-arm64": "0.1.0",
-    "@fragarach/cli-linux-x64": "0.1.0",
-    "@fragarach/cli-win32-x64": "0.1.0"
+    "@hachiware-labs/fragarach-cli-darwin-arm64": "0.1.0",
+    "@hachiware-labs/fragarach-cli-darwin-x64": "0.1.0",
+    "@hachiware-labs/fragarach-cli-linux-arm64": "0.1.0",
+    "@hachiware-labs/fragarach-cli-linux-x64": "0.1.0",
+    "@hachiware-labs/fragarach-cli-win32-x64": "0.1.0"
   }
 }

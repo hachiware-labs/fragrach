@@ -2,7 +2,7 @@
 
 ## 結論
 
-DVAA（Document Validity-Aware Adoption、文書効力考慮根拠採用スコア）は、回答の正誤ではなく、必要な主張を質問に適用できる根拠で支えたかを測る。正答率はAccuracyで別に測る。
+DVAA（Document Validity-Aware Adoption、文書効力を考慮した根拠採用スコア）は、回答の正誤ではなく、必要な主張を質問に適用できる根拠で支えたかを測る。正答率はAccuracyで別に測る。
 
 この定義でDVAAを計測済みの主結果は、私たちがEnterpriseRAG-Benchから選定した500文書サブセット、Enterprise Fragrach 500の125問評価である。HybridからFragrach Soft Rerank v1へ替えると、Recall@20は両方97.07%、Accuracyは55.20%から56.00%、DVAAは0.6689から0.7281になった。
 
@@ -18,33 +18,58 @@ DVAA（Document Validity-Aware Adoption、文書効力考慮根拠採用スコ�
 
 ### DVAAの定義
 
-質問 \(q\) に必要な主張集合を \(C(q)\)、主張 \(c\) の重みを \(w_c\)、その主張を独立して裏付け、依存関係上も質問へ適用できる文書集合を \(A_c(q)\)、回答が根拠として採用した文書集合を \(D(q)\) とする。
+DVAAは、必要な主張を有効な根拠で支えた割合から、失効文書や対象外文書などを根拠として採用したペナルティを引く。計算の全体像は次のとおりである。
 
-\[
+```mermaid
+flowchart LR
+    claims["質問に必要な主張"] --> coverage["有効な根拠で支えた割合<br/>P(q): 0〜1"]
+    adopted["回答が採用した文書"] --> coverage
+    adopted --> harmful["有害な文書を採用した量<br/>H(q): 0〜1"]
+    coverage --> score["DVAA(q) = P(q) - H(q)<br/>範囲: -1〜1"]
+    harmful --> score
+```
+
+各記号の意味は次のとおりである。
+
+| 記号 | 意味 |
+|---|---|
+| `q` | 評価対象の質問 |
+| `C(q)` | 質問に答えるために必要な主張の集合 |
+| `w_c` | 必要主張 `c` の重要度 |
+| `A_c(q)` | 主張 `c` を独立して裏付け、版、時点、適用範囲などの条件も質問に適用できる文書の集合 |
+| `D(q)` | 回答が実際に根拠として採用した文書の集合 |
+| `B(q)` | 失効、対象外、未承認など、この質問の根拠として採用すると有害な文書の集合 |
+| `h_d` | 有害文書 `d` に対するペナルティ |
+
+まず、必要主張 `c` を支える有効な文書を回答が一つ以上採用していれば `I_c(q) = 1`、採用していなければ `0` とする。
+
+```math
 I_c(q)=
 \begin{cases}
-1 & A_c(q)\cap D(q)\neq\varnothing\\
+1 & \text{if } A_c(q) \cap D(q) \ne \varnothing \\
 0 & \text{otherwise}
 \end{cases}
-\]
+```
 
-\[
-P(q)=\frac{\sum_{c\in C(q)}w_c I_c(q)}{\sum_{c\in C(q)}w_c}
-\]
+必要主張の加重カバレッジ `P(q)` は、各主張の重要度を考慮して0から1に正規化する。
 
-有害文書集合を \(B(q)\)、文書 \(d\) のペナルティを \(h_d\) とすると、
+```math
+P(q)=\frac{\sum_{c \in C(q)} w_c I_c(q)}{\sum_{c \in C(q)} w_c}
+```
 
-\[
-H(q)=\min\left(1,\sum_{d\in B(q)\cap D(q)}h_d\right)
-\]
+有害文書の採用ペナルティ `H(q)` は、回答が実際に採用した有害文書のペナルティを合計し、最大1に制限する。
 
-したがって、質問単位のDVAAは次である。
+```math
+H(q)=\min\left(1,\sum_{d \in B(q) \cap D(q)} h_d\right)
+```
 
-\[
-\operatorname{DVAA}(q)=P(q)-H(q),\qquad -1\leq\operatorname{DVAA}(q)\leq1
-\]
+質問単位のDVAAは、加重カバレッジから有害文書の採用ペナルティを引いた値である。
 
-同じ主張を独立して裏付け、文書間の依存関係が結論を変えない文書はOR条件とする。異なる必要主張は重み付きで加算する。版、適用範囲、承認状態、置換、例外、競合などの依存関係が結論を変える場合だけ、\(A_c(q)\) を質問へ適用できる文書へ限定する。Accuracyは別指標であり、DVAAの加点条件には含めない。
+```math
+\operatorname{DVAA}(q)=P(q)-H(q), \qquad -1 \le \operatorname{DVAA}(q) \le 1
+```
+
+同じ主張を独立して裏付け、文書間の依存関係が結論を変えない文書はOR条件とする。異なる必要主張は重み付きで加算する。版、適用範囲、承認状態、置換、例外、競合などの依存関係が結論を変える場合だけ、`A_c(q)`を質問へ適用できる文書へ限定する。Accuracyは別指標であり、DVAAの加点条件には含めない。
 
 | 例 | Recall | Accuracy | DVAA | 理由 |
 |---|---:|---:|---:|---|

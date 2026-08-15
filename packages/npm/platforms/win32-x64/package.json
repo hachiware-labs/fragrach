@@ -1,8 +1,8 @@
 {
-  "name": "@fragarach/cli-win32-x64",
+  "name": "@hachiware-labs/fragarach-cli-win32-x64",
   "version": "0.1.0",
   "description": "Fragrach Rust CLI for Windows x64",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "os": ["win32"],
   "cpu": ["x64"],
   "files": ["bin"]

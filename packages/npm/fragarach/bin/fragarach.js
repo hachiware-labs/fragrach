@@ -7,11 +7,11 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const targets = {
-  "darwin-arm64": ["@fragarach/cli-darwin-arm64", "fragarach"],
-  "darwin-x64": ["@fragarach/cli-darwin-x64", "fragarach"],
-  "linux-arm64": ["@fragarach/cli-linux-arm64", "fragarach"],
-  "linux-x64": ["@fragarach/cli-linux-x64", "fragarach"],
-  "win32-x64": ["@fragarach/cli-win32-x64", "fragarach.exe"]
+  "darwin-arm64": ["@hachiware-labs/fragarach-cli-darwin-arm64", "fragarach"],
+  "darwin-x64": ["@hachiware-labs/fragarach-cli-darwin-x64", "fragarach"],
+  "linux-arm64": ["@hachiware-labs/fragarach-cli-linux-arm64", "fragarach"],
+  "linux-x64": ["@hachiware-labs/fragarach-cli-linux-x64", "fragarach"],
+  "win32-x64": ["@hachiware-labs/fragarach-cli-win32-x64", "fragarach.exe"]
 };
 
 function isFile(file) {

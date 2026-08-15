@@ -8,9 +8,9 @@
 
 [日本語](README_ja.md)
 
-Fragrach analyzes a corpus and compiles the metadata that should be attached to each document for use by a RAG system.
+Fragrach is a metadata compiler for RAG systems that use changing corpora such as enterprise documents. Before retrieval, it compiles documents and their relationships into a Knowledge Build containing the metadata that should be attached to each document, including effective dates, scope, authority, version precedence, exceptions, and source evidence. This metadata helps an existing RAG system improve retrieval and answer accuracy as the corpus evolves.
 
-Fragrach is not a vector database, retrieval server, chat UI, or answer generator. It compiles knowledge and publishes retrieval and answer contracts that an existing RAG system can consume.
+An existing Sparse, Dense, or Hybrid RAG system can attach this metadata to its index or retrieved candidates to distinguish current documents from obsolete versions, approved documents from drafts, and general rules from scoped exceptions. Fragrach itself is not a vector database, retrieval server, chat UI, or answer generator.
 
 The project is under development. The Rust CLI and npm launcher exist in this repository, but the npm package has not been published to the registry.
 
@@ -51,7 +51,9 @@ Compilation and query-time reranking are separate operations. `fragarach compile
 
 ## Final evaluation results
 
-The final evaluation updated on August 10, 2026 reports the following results. On 125 questions from the 500-document Enterprise Fragrach 500 subset, Soft Rerank v1 kept the same top-20 candidate set while improving answer Accuracy and DVAA, which measures whether the answer adopted evidence that was valid for the question.
+The final evaluation updated on August 10, 2026 reports the following results. Document Validity-Aware Adoption (DVAA) measures how well an answer supports its required claims with evidence that applies to the question while avoiding harmful evidence. It is separate from Accuracy, which measures whether the answer itself is correct.
+
+On 125 questions from the 500-document Enterprise Fragrach 500 subset, Soft Rerank v1 kept the same top-20 candidate set while improving both Accuracy and DVAA.
 
 | Condition | Recall@20 | Accuracy | DVAA |
 |---|---:|---:|---:|

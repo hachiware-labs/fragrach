@@ -165,29 +165,29 @@ End-to-Endでは、少なくともRaw Hybrid、同用途へ絞った強いRaw Hy
 | Accuracy | 最終回答の値または判断が、事前に定めた正解（Gold）と一致したかを測る | 各質問を正答なら1、誤答なら0とし、全質問に占める正答の割合を求める | 高いほど正答が多い。ただし、使った根拠が有効か、必要な根拠が揃ったかは分からない |
 | DVAA | 必要な主張を、質問に適用できる根拠でどれだけ支え、有害な根拠を避けたかを測る | 必要主張の加重カバレッジから有害文書の採用ペナルティを引き、全質問で平均する | −1から1。1は必要主張をすべて有効な根拠で支えた状態、0は加点も減点もない状態、負値は有害文書を根拠として採用した状態を表す |
 
-DVAA（Document Validity-Aware Adoption、文書効力考慮根拠採用スコア）では、質問 \(q\) の必要主張集合を \(C(q)\)、主張 \(c\) の重みを \(w_c\)、その主張を独立して裏付け、依存関係上も質問へ適用できる文書集合を \(A_c(q)\)、回答が根拠として採用した文書集合を \(D(q)\) とする。
+DVAA（Document Validity-Aware Adoption、文書効力を考慮した根拠採用スコア）では、質問`q`の必要主張集合を`C(q)`、主張`c`の重みを`w_c`、その主張を独立して裏付け、依存関係上も質問へ適用できる文書集合を`A_c(q)`、回答が根拠として採用した文書集合を`D(q)`とする。
 
-\[
+```math
 I_c(q)=
 \begin{cases}
-1 & A_c(q)\cap D(q)\neq\varnothing\\
+1 & \text{if } A_c(q) \cap D(q) \ne \varnothing \\
 0 & \text{otherwise}
 \end{cases}
-\]
+```
 
-\[
-P(q)=\frac{\sum_{c\in C(q)}w_c I_c(q)}{\sum_{c\in C(q)}w_c}
-\]
+```math
+P(q)=\frac{\sum_{c \in C(q)} w_c I_c(q)}{\sum_{c \in C(q)} w_c}
+```
 
-有害文書集合を \(B(q)\)、文書 \(d\) のペナルティを \(h_d\) とすると、
+有害文書集合を`B(q)`、文書`d`のペナルティを`h_d`とすると、
 
-\[
-H(q)=\min\left(1,\sum_{d\in B(q)\cap D(q)}h_d\right)
-\]
+```math
+H(q)=\min\left(1,\sum_{d \in B(q) \cap D(q)} h_d\right)
+```
 
-\[
-\operatorname{DVAA}(q)=P(q)-H(q),\qquad -1\leq\operatorname{DVAA}(q)\leq1
-\]
+```math
+\operatorname{DVAA}(q)=P(q)-H(q), \qquad -1 \le \operatorname{DVAA}(q) \le 1
+```
 
 同じ主張を独立して裏付け、文書間の依存関係が結論を変えない文書はOR条件とする。版、適用範囲、承認状態、置換、例外、競合などが結論を変える場合だけ、許容文書を質問へ適用できる文書へ限定する。AccuracyはDVAAの加点条件に含めない。
 
