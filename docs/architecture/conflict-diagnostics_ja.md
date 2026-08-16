@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="../../assets/fragrach-logo.png" alt="Fragrach — The Anserer" width="360">
+  <img src="../../assets/fragrach-logo-answerer.png" alt="Fragrach — The Answerer" width="360">
 </p>
 
 # 矛盾診断とコンパイルポリシー

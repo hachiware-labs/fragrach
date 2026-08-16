@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="../../assets/fragrach-logo.png" alt="Fragrach — The Anserer" width="360">
+  <img src="../../assets/fragrach-logo-answerer.png" alt="Fragrach — The Answerer" width="360">
 </p>
 
 # Fragrach: Dependency-aware Living Corpus RAG

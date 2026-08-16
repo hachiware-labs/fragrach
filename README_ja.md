@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/fragrach-logo.png" alt="Fragrach — The Anserer" width="420">
+  <img src="assets/fragrach-logo-answerer.png" alt="Fragrach — The Answerer" width="420">
 </p>
 
 # Fragrach
@@ -13,6 +13,12 @@ Fragrachは、企業文書のように内容や効力が変化し続けるコー
 既存のSparse／Dense／Hybrid RAGは、このメタデータを索引や検索候補に付与することで、現行文書と旧版、正式文書と草案、一般規則と個別例外を区別できます。Fragrach自体はベクトルDB、検索サーバー、チャットUI、回答生成器ではありません。
 
 現在は開発版です。Rust CLIとnpmランチャーはリポジトリにありますが、npmレジストリにはまだ公開していません。
+
+## 名前の由来
+
+Fragrachという名前は、アイルランド神話（ケルト神話圏）に登場する剣Fragarach（Freagarthach）に由来します。Lady Gregoryによる1904年の再話では、海神Manannán mac Lirの剣をLughが携え、[「The Answerer」と呼ばれています](https://archive.org/details/godsfightingmens00gregrich/page/22/mode/2up)。名に通じるアイルランド語の[`freagair`](https://www.teanglann.ie/en/fgb/freagair)には、「答える」「応じる」という意味があります。
+
+[現代の伝承紹介](https://mythlok.com/weapons/fragarach/)では、喉元に突きつけられた者に真実を答えさせる剣とも語られます。Fragrachはこのイメージを、文書の版、効力、適用範囲、権威を確かめ、根拠に基づく回答へつなげる役割に重ねた名前です。神話上の綴りは`Fragarach`または`Freagarthach`、本プロジェクト名は`Fragrach`です。
 
 ## Fragrachを使う位置
 

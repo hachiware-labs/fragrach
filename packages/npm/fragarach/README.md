@@ -1,10 +1,12 @@
 <p align="center">
-  <img src="assets/fragrach-logo.png" alt="Fragrach — The Anserer" width="360">
+  <img src="assets/fragrach-logo-answerer.png" alt="Fragrach — The Answerer" width="360">
 </p>
 
 # Fragrach
 
 Fragrach compiles source documents into evidence-preserving Knowledge Builds before they are ingested into a RAG system.
+
+The name comes from Fragarach, also spelled Freagarthach, the Irish mythological sword called [“The Answerer”](https://archive.org/details/godsfightingmens00gregrich/page/22/mode/2up). Modern accounts describe it as compelling truthful answers; Fragrach applies that image to answers grounded in document validity and evidence. The mythological name and the project name use different spellings.
 
 ```console
 npx fragarach --help

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="../../assets/fragrach-logo.png" alt="Fragrach — The Anserer" width="360">
+  <img src="../../assets/fragrach-logo-answerer.png" alt="Fragrach — The Answerer" width="360">
 </p>
 
 # Fragrach要件定義：システム要件と評価基準

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/fragrach-logo.png" alt="Fragrach — The Anserer" width="420">
+  <img src="assets/fragrach-logo-answerer.png" alt="Fragrach — The Answerer" width="420">
 </p>
 
 # Fragrach
@@ -13,6 +13,12 @@ Fragrach is a metadata compiler for RAG systems that use changing corpora such a
 An existing Sparse, Dense, or Hybrid RAG system can attach this metadata to its index or retrieved candidates to distinguish current documents from obsolete versions, approved documents from drafts, and general rules from scoped exceptions. Fragrach itself is not a vector database, retrieval server, chat UI, or answer generator.
 
 The project is under development. The Rust CLI and npm launcher exist in this repository, but the npm package has not been published to the registry.
+
+## The name
+
+Fragrach takes its name from Fragarach, also spelled Freagarthach, a sword from Irish mythology in the Celtic tradition. In Lady Gregory's 1904 retelling, Lugh carries the sword of the sea god Manannán mac Lir, and it is [called “The Answerer”](https://archive.org/details/godsfightingmens00gregrich/page/22/mode/2up). The related Irish verb [`freagair`](https://www.teanglann.ie/en/fgb/freagair) means “answer” or “respond.”
+
+[Modern accounts](https://mythlok.com/weapons/fragarach/) also describe the sword as compelling a person at whose throat it was held to answer truthfully. The project name connects that image with Fragrach's purpose: checking document versions, validity, scope, and authority before producing an evidence-grounded answer. The mythological name is spelled `Fragarach` or `Freagarthach`; the project is spelled `Fragrach`.
 
 ## Where Fragrach fits
 
