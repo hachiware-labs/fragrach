@@ -237,7 +237,7 @@ Raw Denseは回答値を157問で正解したが、有効かつ完全な根拠�
 
 外部分布のMultiHop-RAG、EnterpriseRAG-Bench diagnostic、VersionQAで計測済みの二値値は、Accuracyを合否条件に含む完全根拠付き正答率であり、DVAAへ読み替えない。現在のDVAAによる外部分布性能は未計測である。
 
-未知の企業文書構造、不完全または誤ったmetadata、同一purposeで13文書を超える実データ、実際の質問分布で重み付けしたProduction-weighted trackは未評価である。質問単位の3指標、信頼区間、入力hash、外部分布の区分は[最終評価レポート](../evaluations/final-metrics-2026-08-09_ja.md)と機械可読な`target/benchmarks/final-metrics-2026-08-09/report.json`へ保存した。Compile工程の診断値と運用費用は方式検証には使うが、最終精度表には混ぜない。
+未知の企業文書構造、不完全または誤ったmetadata、同一purposeで13文書を超える実データ、実際の質問分布で重み付けしたProduction-weighted trackは未評価である。質問単位の3指標、信頼区間、入力hash、外部分布の区分は[最終評価レポート](../evaluations/final-metrics_ja.md)と機械可読な`target/benchmarks/final-metrics-2026-08-09/report.json`へ保存した。Compile工程の診断値と運用費用は方式検証には使うが、最終精度表には混ぜない。
 
 ## 6. 関連研究との位置づけ
 

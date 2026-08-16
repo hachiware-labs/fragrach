@@ -225,7 +225,7 @@ GraphやAgentが失敗したとき、必要文書へ到達できなかったの�
 
 Fragrach内の評価は、外部文献と同じ傾向を一部示している。ただし、最大でも500文書規模であり、「BM25 Wins at Scale」の50万文書級scalingを再現したものではない。以下は文献上の一般知見ではなく、ローカルな観測である。
 
-初期のRaw Dense・Hybrid検索評価では、500文書、2,461 chunks、100問で、Tuned SparseがR@5 74.0%、R@10 89.5%、Qwen Denseが48.7%／79.5%、Ruri Denseが65.7%／86.5%だった。Qwen HybridのSparse比率0.85は75.0%／91.5%で、Sparseに対する増分は小さいが存在した。保留27問ではR@5が70.4%から72.2%へ上がり、R@10は85.2%で同じだった。現行の結果は[最終評価](../evaluations/final-metrics-2026-08-09_ja.md)を正とする。
+初期のRaw Dense・Hybrid検索評価では、500文書、2,461 chunks、100問で、Tuned SparseがR@5 74.0%、R@10 89.5%、Qwen Denseが48.7%／79.5%、Ruri Denseが65.7%／86.5%だった。Qwen HybridのSparse比率0.85は75.0%／91.5%で、Sparseに対する増分は小さいが存在した。保留27問ではR@5が70.4%から72.2%へ上がり、R@10は85.2%で同じだった。現行の結果は[最終評価](../evaluations/final-metrics_ja.md)を正とする。
 
 Conflict両側@10はHybridで92.3%から96.2%へ改善した一方、両側を取得できた質問で正規側を上位へ置くResolution Accuracyは83.3%から80.0%へ下がった。これは、Denseが関係文書を追加で拾えても、現行版、正本、例外を関連度だけで決められないことを示す。
 

@@ -67,7 +67,7 @@ Fragrachは、文書構造、メタデータ、依存関係、適用条件、版
 | Raw Ruri Dense | 92.75% | 78.50% (157/200) | 0.00% (0/200) |
 | Fragrach Ruri Packet | 97.50% | 98.50% (197/200) | 96.00% (192/200) |
 
-これらは固定コーパスと固定モデルによる開発時評価であり、実運用での性能保証ではありません。全比較条件、信頼区間、指標の定義、限界は[最終評価レポート](docs/evaluations/final-metrics-2026-08-09_ja.md)を参照してください。
+これらは固定コーパスと固定モデルによる開発時評価であり、実運用での性能保証ではありません。全比較条件、信頼区間、指標の定義、限界は[最終評価レポート](docs/evaluations/final-metrics_ja.md)を参照してください。
 
 ## ソースからCLIを実行する
 
@@ -235,4 +235,4 @@ npm test
 - [標準rerank仕様](docs/reranking_ja.md)
 - [Conflict診断の設計](docs/architecture/conflict-diagnostics_ja.md)
 - [評価記録の規約](docs/evaluation-recording_ja.md)
-- [最終評価](docs/evaluations/final-metrics-2026-08-09_ja.md)
+- [最終評価](docs/evaluations/final-metrics_ja.md)

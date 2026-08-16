@@ -27,7 +27,7 @@ const defaultOutputDirectory = path.join(
 );
 const defaultMarkdown = path.join(
   repositoryRoot,
-  "docs/evaluations/final-metrics-2026-08-09_ja.md",
+  "docs/evaluations/final-metrics_ja.md",
 );
 const defaultEnterpriseFragrach500Report = path.join(
   repositoryRoot,

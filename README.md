@@ -67,7 +67,7 @@ A separate practical holdout used 200 questions from 100 previously unseen docum
 | Raw Ruri Dense | 92.75% | 78.50% (157/200) | 0.00% (0/200) |
 | Fragrach Ruri Packet | 97.50% | 98.50% (197/200) | 96.00% (192/200) |
 
-These are development evaluations on fixed corpora and model configurations, not guaranteed production performance. See the [final evaluation report](docs/evaluations/final-metrics-2026-08-09_ja.md) for all baselines, confidence intervals, metric definitions, and limitations.
+These are development evaluations on fixed corpora and model configurations, not guaranteed production performance. See the [final evaluation report](docs/evaluations/final-metrics_ja.md) for all baselines, confidence intervals, metric definitions, and limitations.
 
 ## Build and run the CLI from source
 
@@ -223,4 +223,4 @@ npm test
 - [Compilation pipeline](docs/compilation-pipeline_ja.md)
 - [Standard reranking contract](docs/reranking_ja.md)
 - [Evaluation recording rules](docs/evaluation-recording_ja.md)
-- [Final evaluation (Japanese)](docs/evaluations/final-metrics-2026-08-09_ja.md)
+- [Final evaluation (Japanese)](docs/evaluations/final-metrics_ja.md)

@@ -19,8 +19,8 @@ __pycache__/
 /docs/implementation-plan-phase1_ja.md
 /docs/user-manual-reader-review_ja.md
 /docs/evaluations/*
-!/docs/evaluations/final-metrics-2026-08-09_ja.md
-!/docs/evaluations/versionqa-external-pilot-2026-08-04_ja.md
+!/docs/evaluations/final-metrics_ja.md
+!/docs/evaluations/versionqa-external-pilot_ja.md
 /docs/research/
 /docs/paper/assets/fragrach-capability-comparison.png
 /docs/paper/assets/fragrach-same-clause-graph-comparison.png
