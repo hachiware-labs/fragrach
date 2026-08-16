@@ -110,6 +110,37 @@ EnterpriseRAG-Benchから選定した500文書サブセットで、Qwen Hybrid t
 
 完全根拠付き正答率は、正答、必要根拠の完備、根拠の時点・対象範囲・承認状態・発行主体・文書関係をすべて満たした質問の割合である。Fragrach Ruri PacketとRaw Ruri Denseの差は+96.00ポイント、質問単位bootstrapの95%信頼区間は93.00–98.50ポイントだった。この値はDVAAの式で再計算していないため、DVAAの結果や比較対象には含めない。
 
+## VersionQA外部データ評価
+
+VersionQAでは、版が異なる技術文書から指定版本文、版一覧、明示変更、暗黙変更を答える能力を測った。公開リポジトリのcommit `2a2cbe8f285557f99dc7a79d6df7134e1e3eccff`に含まれる34文書と100問を取得し、このうち版依存の60問を回答評価へ用いた。ReaderとJudgeはLuna `gpt-5.6-luna`、reasoning effort `low`、検索件数はtop-5へ固定した。
+
+Gold監査では、60問のうち7問について、Gold回答を配布コーパスから一意に支持できないことが分かった。これらはRawとFragrachのどちらにも採点不能であるため、理由をcase-levelに残して両条件の分母から除外した。保存済みの回答と判定を使い、検索と回答生成を再実行せず、同じ53問で再集計した結果は次のとおりである。
+
+| 指標 | Raw Ruri Hybrid | Fragrach Query-relative Packet | 差 |
+|---|---:|---:|---:|
+| Accuracy | 66.04%（35/53） | 100%（53/53） | +33.96ポイント |
+| Document Recall@5 | 66.25% | 100% | +33.75ポイント |
+| Evidence Unit Recall@5 | 35.85% | 100% | +64.15ポイント |
+| 完全根拠付き正答率 | 16.98%（9/53） | 100%（53/53） | +83.02ポイント |
+
+質問単位では、35問に両条件が正答し、18問はFragrachだけが正答した。Rawだけが正答した質問と、両条件が誤答した質問はなかった。カテゴリ別Accuracyは、指定版本文でRaw 14/19、Fragrach 19/19、版一覧で11/20対20/20、暗黙変更で1/4対4/4、明示変更で9/10対10/10だった。Gold監査前に記録したRaw 58.3%（35/60）は採点不能な7問を誤答として含む履歴値であり、主要比較には同じ53問による66.0%を用いる。
+
+除外した7問は、次の内部不整合を持つ。
+
+| ID | 不整合 |
+|---|---|
+| `VQA-049` | GoldはNode.js 17.9.1のconstructorを`new Error(message[, options])`とするが、配布文書は`new Error(message)`である |
+| `VQA-081` | Goldは17.9.1で「変更なし」とするが、配布された16.20.2と17.9.1の間で`options/cause`とsignatureが異なる |
+| `VQA-082` | GoldはOpenSSL Error Codesの導入を22.14.0とするが、配布された20.19.0文書に既に該当節がある |
+| `VQA-084` | Goldは`ERR_FS_CP_DIR_TO_NON_DIR`を16.20.2へ割り当てるが、文書内のAPI履歴は`added: v16.7.0`とする |
+| `VQA-086` | Goldは`CallTracker`を14.21.3へ割り当てるが、文書内のAPI履歴は`added: v14.2.0`とする |
+| `VQA-087` | GoldはWeakMap／WeakSet比較例を22.14.0へ割り当てるが、配布された20.19.0文書に同様の構造があり、一意の導入版を決められない |
+| `VQA-088` | Goldは`partialDeepStrictEqual`を22.14.0へ割り当てるが、文書内のAPI履歴は`added: v22.13.0`とする |
+
+この不整合にはGoldの誤記だけでなく、配布文書の欠落や、「収録スナップショットでの初出」と「API履歴上の導入版」という二つの時間軸の混同が含まれうる。そのため、外部の正史まで確認せずにGoldだけが誤りとは断定せず、VersionQAパッケージ内部で採点不能な問題として扱う。7問は版依存60問の11.7%、全100問の7.0%に当たる。2026年8月16日時点ではVersionRAG upstreamへ未報告である。
+
+Fragrachの100%は、質問型別Packetを改善した開発集合上の適合値であり、未知データへの一般化性能ではない。VersionQAで確認できたのは、指定版の関連span、完全な版一覧、検証済み不在、比較対象二版の意味差分を、質問相対の不可分な回答資料として渡す設計が、この集合で有効だったことである。初回失敗から最終runまでの経緯は[VersionQA外部データ評価](versionqa-external-pilot-2026-08-04_ja.md)に記録した。
+
 ## 解釈上の境界
 
 Enterprise Fragrach 500の125問値は、検索前に生成済みだった未使用accepted候補25問を全件追加した質問数頑健性確認である。追加判断は100問結果の確認後なので、先行100問と追加25問を分けて報告する。DVAA契約はSol監査であり、人手監査済みのDVAA Fullではない。
@@ -123,5 +154,8 @@ MultiHop-RAG、EnterpriseRAG-Bench diagnostic、VersionQAで計測済みの二�
 - Enterprise Fragrach 500: 500文書・125問、Qwen Hybrid top20とSoft Rerank v1の対応比較。先行100問と事後追加25問を分離
 - Enterprise集計: `tests/EnterpriseRAG-Fragrach-500/results/fragrach-rerank-fixed20-expanded-summary-v1/report.json`
 - DVAA正本: `tests/EnterpriseRAG-Fragrach-500/DVAA_EVALUATION_ja.md`
+- VersionQA Raw再採点: `target/benchmarks/versionqa/answers-evidence-unit-v3/report.json`
+- VersionQA Query-relative Packet最終run: `target/benchmarks/versionqa/query-packet-answers-v4/report.json`
+- VersionQA Gold監査契約: `tests/benchmarks/rag-comparison/versionqa-evidence-contracts.json`
 
 入力artifactのhashは各集計JSONの`inputs`へ保存した。回答、採点、Goldのいずれかが変わった場合は、同じ最終値へ混ぜず、別runとして再生成する。
