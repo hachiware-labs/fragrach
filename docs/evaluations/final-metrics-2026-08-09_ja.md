@@ -1,4 +1,4 @@
-# Fragrach 精度評価 最終版（2026-08-10更新）
+# Fragrach 精度評価 最終版
 
 ## 結論
 
@@ -66,7 +66,7 @@ H(q)=\min\left(1,\sum_{d \in B(q) \cap D(q)} h_d\right)
 質問単位のDVAAは、加重カバレッジから有害文書の採用ペナルティを引いた値である。
 
 ```math
-\operatorname{DVAA}(q)=P(q)-H(q), \qquad -1 \le \operatorname{DVAA}(q) \le 1
+\mathrm{DVAA}(q)=P(q)-H(q), \qquad -1 \le \mathrm{DVAA}(q) \le 1
 ```
 
 同じ主張を独立して裏付け、文書間の依存関係が結論を変えない文書はOR条件とする。異なる必要主張は重み付きで加算する。版、適用範囲、承認状態、置換、例外、競合などの依存関係が結論を変える場合だけ、`A_c(q)`を質問へ適用できる文書へ限定する。Accuracyは別指標であり、DVAAの加点条件には含めない。
